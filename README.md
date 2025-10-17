@@ -49,6 +49,15 @@ python -m train_spotter.service.main --web-only
 
 The default dashboard listens on `0.0.0.0:8080`. Adjust the host/port within the configuration file if required.
 
+### Running tests
+
+Install dev dependencies and invoke pytest:
+
+```bash
+pip install -r requirements.txt
+pytest
+```
+
 ## Deployment Aids
 - `configs/trafficcamnet_primary.txt` – base nvinfer configuration targeting the bundled TrafficCamNet model. Adjust paths if your DeepStream installation differs.
 - `configs/iou_tracker_config.txt` – IOU tracker defaults suitable for roadway scenes.
