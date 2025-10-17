@@ -33,7 +33,17 @@ The code base is structured to run directly on the Jetson Xavier AGX and assumes
 4. Calibrate regions of interest with the provided tooling (TBD).
 5. Launch the application:
    ```bash
-   python -m train_spotter.service.main
+   python -m train_spotter.service.main --config path/to/config.json
    ```
+
+### Web dashboard only
+
+If you are testing against a prerecorded DeepStream pipeline or another video source, launch in dashboard-only mode:
+
+```bash
+python -m train_spotter.service.main --web-only
+```
+
+The default dashboard listens on `0.0.0.0:8080`. Adjust the host/port within the configuration file if required.
 
 Additional documentation will be added as components are implemented.
