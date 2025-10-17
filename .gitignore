@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.venv/
+.env
+
+# Jetson / DeepStream artifacts
+*.log
+outputs/
+nvds_
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
