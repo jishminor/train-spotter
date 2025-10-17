@@ -14,6 +14,8 @@ build/
 outputs/
 nvds_
 train_spotter/tests/*.mp4
+.venv/
+data/
 
 # IDE
 .vscode/

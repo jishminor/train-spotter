@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import configparser
 import logging
 import threading
 import time
+from pathlib import Path
 from typing import Callable, Optional
+
+import gi
+
+gi.require_version("Gst", "1.0")
+gi.require_version("GObject", "2.0")
 
 from gi.repository import GLib, GObject, Gst  # type: ignore
 
@@ -49,8 +56,8 @@ class DeepStreamPipeline:
         source_bin = self._create_source_bin(self._config.camera_source)
         streammux = self._make_element("nvstreammux", "stream-muxer")
         streammux.set_property("batch-size", 1)
-        streammux.set_property("width", 1920)
-        streammux.set_property("height", 1080)
+        streammux.set_property("width", 640)
+        streammux.set_property("height", 480)
         streammux.set_property("live-source", 1)
         streammux.set_property("batched-push-timeout", 4000000)
 
@@ -62,7 +69,7 @@ class DeepStreamPipeline:
         tracker = self._make_element("nvtracker", "tracker")
         tracker_config_path = self._config.vehicle_tracking.tracker_config_path
         if tracker_config_path:
-            tracker.set_property("ll-lib-file", tracker_config_path)
+            self._configure_tracker(tracker, tracker_config_path)
 
         nvvidconv = self._make_element("nvvideoconvert", "video-converter")
         nvosd = self._make_element("nvdsosd", "on-screen-display")
@@ -154,7 +161,7 @@ class DeepStreamPipeline:
         self._pipeline.set_state(Gst.State.NULL)
         if self._main_loop:
             self._main_loop.quit()
-        if self._thread and self._thread.is_alive():
+        if self._thread and self._thread.is_alive() and threading.current_thread() is not self._thread:
             self._thread.join(timeout=2.0)
         if self._bus_watch_id is not None:
             bus = self._pipeline.get_bus()
@@ -196,6 +203,45 @@ class DeepStreamPipeline:
         if not element:
             raise RuntimeError(f"Failed to create element {factory_name}")
         return element
+
+    def _configure_tracker(self, tracker, config_path: str) -> None:
+        parser = configparser.ConfigParser()
+        parser.read(config_path)
+        if "tracker" not in parser:
+            raise RuntimeError(f"Tracker config missing [tracker] section: {config_path}")
+
+        section = parser["tracker"]
+        config_dir = Path(config_path).parent
+
+        int_keys = {
+            "tracker-width",
+            "tracker-height",
+            "gpu-id",
+            "enable-batch-process",
+            "enable-past-frame",
+            "display-tracking-id",
+            "min-tracks-considered",
+            "max-shadow-tracking-age",
+        }
+        float_keys = {"iou-threshold", "min-confidence"}
+
+        for key, raw_value in section.items():
+            prop_name = key
+            value: object = raw_value
+            if prop_name in {"ll-lib-file", "ll-config-file"}:
+                path = Path(raw_value)
+                if not path.is_absolute():
+                    path = (config_dir / path).resolve()
+                value = str(path)
+            elif prop_name in int_keys:
+                value = int(raw_value)
+            elif prop_name in float_keys:
+                value = float(raw_value)
+
+            try:
+                tracker.set_property(prop_name, value)
+            except TypeError:
+                LOGGER.warning("Tracker property '%s' not supported; skipping", prop_name)
 
     def _create_source_bin(self, source_desc: str):
         bin_desc = f"{source_desc} ! nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! queue"

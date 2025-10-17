@@ -135,7 +135,7 @@ class StorageSettings(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    database_path: str = Field(default="/data/train-spotter/events.db")
+    database_path: str = Field(default="data/events.db")
     ensure_fsync: bool = Field(
         default=True, description="Force fsync after critical writes"
     )
@@ -162,8 +162,10 @@ class AppConfig(BaseModel):
 
     camera_id: str = Field(default="camera0")
     camera_source: str = Field(
-        default="nvarguscamerasrc sensor-id=0", description="GStreamer source"
+        default="nvarguscamerasrc sensor-id=0",
+        description="GStreamer source pipeline string",
     )
+    # camera_source: str = "filesrc location=/home/jishminor/code/train-spotter/train_spotter/tests/traffic.mp4 ! qtdemux ! h264parse ! nvv4l2decoder ! nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! queue"
     roi_config_path: str = Field(
         default="train_spotter/data/roi_config.json",
         description="Path to ROI configuration JSON",
@@ -214,6 +216,7 @@ class AppConfig(BaseModel):
             "vehicle_tracking": {
                 "lanes": [],
                 "infer_primary_config_path": "configs/trafficcamnet_primary.txt",
+                "tracker_config_path": "configs/iou_tracker_config.txt",
             },
         }
         return cls.from_dict(default_data)

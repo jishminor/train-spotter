@@ -3,9 +3,7 @@
 [tracker]
 tracker-width=640
 tracker-height=384
-ll-lib-file=/opt/nvidia/deepstream/deepstream/lib/libnvds_mot_iou.so
-ll-config-file=/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDCF_accuracy.yml
-enable-batch-process=1
-enable-past-frame=0
-max-shadow-tracking-age=25
-min-tracks-considered=1
+gpu-id=0
+ll-lib-file=/opt/nvidia/deepstream/deepstream-6.3/lib/libnvds_nvmultiobjecttracker.so
+ll-config-file=/opt/nvidia/deepstream/deepstream-6.3/samples/configs/deepstream-app/config_tracker_IOU.yml
+display-tracking-id=1
