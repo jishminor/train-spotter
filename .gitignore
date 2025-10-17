@@ -13,6 +13,7 @@ build/
 *.log
 outputs/
 nvds_
+train_spotter/tests/*.mp4
 
 # IDE
 .vscode/
