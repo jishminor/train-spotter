@@ -164,8 +164,7 @@ class DeepStreamPipeline:
         if self._thread and self._thread.is_alive() and threading.current_thread() is not self._thread:
             self._thread.join(timeout=2.0)
         if self._bus_watch_id is not None:
-            bus = self._pipeline.get_bus()
-            bus.remove_watch(self._bus_watch_id)
+            GLib.source_remove(self._bus_watch_id)
             self._bus_watch_id = None
         for pad in self._tee_src_pads:
             if pad:
