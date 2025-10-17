@@ -19,14 +19,19 @@ LOGGER = logging.getLogger(__name__)
 class DeepStreamPipeline:
     """Build and control the DeepStream pipeline according to application config."""
 
-    def __init__(self, config: AppConfig, event_bus: EventBus) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        event_bus: EventBus,
+        overlay_controller=None,
+    ) -> None:
         self._config = config
         self._event_bus = event_bus
         self._pipeline: Optional[Gst.Pipeline] = None
         self._main_loop: Optional[GObject.MainLoop] = None
         self._bus_watch_id: Optional[int] = None
         self._thread: Optional[threading.Thread] = None
-        self._analytics = StreamAnalytics(config, event_bus)
+        self._analytics = StreamAnalytics(config, event_bus, overlay_controller)
         Gst.init(None)
 
     def build(self) -> None:

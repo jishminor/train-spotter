@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section>
+  <h2>Recent Train Passes</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Train ID</th>
+        <th>Start</th>
+        <th>End</th>
+        <th>Duration (s)</th>
+        <th>Coverage</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for t in trains %}
+      <tr>
+        <td>{{ t.train_id }}</td>
+        <td>{{ t.started_at }}</td>
+        <td>{{ t.ended_at }}</td>
+        <td>{{ '%.1f'|format(t.duration) }}</td>
+        <td>{{ t.coverage_ratio or '-' }}</td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="5">No train events recorded yet.</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+<section>
+  <h2>Vehicle Events</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Track</th>
+        <th>Label</th>
+        <th>Lane</th>
+        <th>Entered</th>
+        <th>Exited</th>
+        <th>Duration (s)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for v in vehicles %}
+      <tr>
+        <td>{{ v.track_id }}</td>
+        <td>{{ v.class_label }}</td>
+        <td>{{ v.lane_id }}</td>
+        <td>{{ v.entered_at }}</td>
+        <td>{{ v.exited_at }}</td>
+        <td>{{ '%.1f'|format(v.duration) }}</td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="6">No vehicle events recorded yet.</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

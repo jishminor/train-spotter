@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="live-view">
+  <h2>Live Feed</h2>
+  <img class="live-stream" src="{{ url_for('video_feed') }}" alt="Live camera feed">
+</section>
+{% endblock %}

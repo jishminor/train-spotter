@@ -5,11 +5,14 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 from train_spotter.service.config import AppConfig, LaneSpec, TrainDetectionSettings
 from train_spotter.storage import EventBus, EventMessage, EventType
 from train_spotter.storage.db import TrainEvent, VehicleEvent
+
+if TYPE_CHECKING:
+    from train_spotter.ui.display import OverlayController
 
 try:
     import pyds  # type: ignore
@@ -125,7 +128,12 @@ class VehicleTrackerHooks:
 class StreamAnalytics:
     """Glue layer converting DeepStream metadata into domain events."""
 
-    def __init__(self, app_config: AppConfig, event_bus: EventBus) -> None:
+    def __init__(
+        self,
+        app_config: AppConfig,
+        event_bus: EventBus,
+        overlay_controller: "OverlayController" | None = None,
+    ) -> None:
         if pyds is None:
             LOGGER.warning("pyds is not available; analytics will be inert")
         self._config = app_config
@@ -135,6 +143,7 @@ class StreamAnalytics:
             app_config.vehicle_tracking.lanes,
             event_bus,
         )
+        self._overlay = overlay_controller
 
     def process_frame(self, batch_meta) -> None:
         """Entry point for pad probe to process NvDsBatchMeta."""
@@ -152,6 +161,8 @@ class StreamAnalytics:
                 self._vehicle_hooks.handle_detection(det, timestamp)
             # At end of frame, finalise stale tracks
             self._vehicle_hooks.finalise_tracks(timestamp)
+            if self._overlay is not None:
+                self._overlay.apply_to_frame(frame_meta)
             l_frame = l_frame.next
 
     def _cast_frame_meta(self, data):
