@@ -1,0 +1,11 @@
+# IOU tracker configuration tuned for single-camera roadway scenes.
+
+[tracker]
+tracker-width=640
+tracker-height=384
+ll-lib-file=/opt/nvidia/deepstream/deepstream/lib/libnvds_mot_iou.so
+ll-config-file=/opt/nvidia/deepstream/deepstream/samples/configs/deepstream-app/config_tracker_NvDCF_accuracy.yml
+enable-batch-process=1
+enable-past-frame=0
+max-shadow-tracking-age=25
+min-tracks-considered=1

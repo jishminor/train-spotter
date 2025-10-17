@@ -5,12 +5,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from gi.repository import GLib, GObject, Gst  # type: ignore
 
 from train_spotter.pipeline.analytics import StreamAnalytics, analytics_pad_probe
 from train_spotter.service.config import AppConfig
+from train_spotter.service.roi import ROIConfig
 from train_spotter.storage import EventBus, EventMessage, EventType
 
 LOGGER = logging.getLogger(__name__)
@@ -24,6 +25,8 @@ class DeepStreamPipeline:
         config: AppConfig,
         event_bus: EventBus,
         overlay_controller=None,
+        roi_config: ROIConfig | None = None,
+        frame_callback: Optional[Callable[[bytes], None]] = None,
     ) -> None:
         self._config = config
         self._event_bus = event_bus
@@ -31,7 +34,10 @@ class DeepStreamPipeline:
         self._main_loop: Optional[GObject.MainLoop] = None
         self._bus_watch_id: Optional[int] = None
         self._thread: Optional[threading.Thread] = None
-        self._analytics = StreamAnalytics(config, event_bus, overlay_controller)
+        self._analytics = StreamAnalytics(config, event_bus, overlay_controller, roi_config)
+        self._frame_callback = frame_callback
+        self._tee_src_pads: list[Gst.Pad] = []
+        self._appsink: Optional[Gst.Element] = None
         Gst.init(None)
 
     def build(self) -> None:
@@ -61,11 +67,40 @@ class DeepStreamPipeline:
         nvvidconv = self._make_element("nvvideoconvert", "video-converter")
         nvosd = self._make_element("nvdsosd", "on-screen-display")
 
+        tee = self._make_element("tee", "display-tee")
+        queue_display = self._make_element("queue", "display-queue")
+        queue_display.set_property("leaky", 2)
+        queue_display.set_property("max-size-buffers", 4)
         sink = self._make_element(self._config.display.sink_type, "display-sink")
         sink.set_property("sync", False)
 
+        queue_web = self._make_element("queue", "web-queue")
+        queue_web.set_property("leaky", 2)
+        queue_web.set_property("max-size-buffers", 2)
+        nvjpegenc = self._make_element("nvjpegenc", "jpeg-encoder")
+        nvjpegenc.set_property("quality", 70)
+        appsink = self._make_element("appsink", "web-appsink")
+        appsink.set_property("emit-signals", True)
+        appsink.set_property("sync", False)
+        appsink.connect("new-sample", self._on_new_sample)
+        self._appsink = appsink
+
+        elements = [
+            streammux,
+            primary_infer,
+            tracker,
+            nvvidconv,
+            nvosd,
+            tee,
+            queue_display,
+            sink,
+            queue_web,
+            nvjpegenc,
+            appsink,
+        ]
+
         self._pipeline.add(source_bin)
-        for element in (streammux, primary_infer, tracker, nvvidconv, nvosd, sink):
+        for element in elements:
             self._pipeline.add(element)
 
         self._link_source_to_streammux(source_bin, streammux)
@@ -77,8 +112,16 @@ class DeepStreamPipeline:
             raise RuntimeError("Failed to link tracker to nvvidconv")
         if not nvvidconv.link(nvosd):
             raise RuntimeError("Failed to link nvvidconv to nvosd")
-        if not nvosd.link(sink):
-            raise RuntimeError("Failed to link nvosd to sink")
+        if not nvosd.link(tee):
+            raise RuntimeError("Failed to link nvosd to tee")
+        self._link_tee_to_queue(tee, queue_display)
+        if not queue_display.link(sink):
+            raise RuntimeError("Failed to link display queue to sink")
+        self._link_tee_to_queue(tee, queue_web)
+        if not queue_web.link(nvjpegenc):
+            raise RuntimeError("Failed to link web queue to nvjpegenc")
+        if not nvjpegenc.link(appsink):
+            raise RuntimeError("Failed to link nvjpegenc to appsink")
 
         tracker_src_pad = tracker.get_static_pad("src")
         if tracker_src_pad:
@@ -117,6 +160,12 @@ class DeepStreamPipeline:
             bus = self._pipeline.get_bus()
             bus.remove_watch(self._bus_watch_id)
             self._bus_watch_id = None
+        for pad in self._tee_src_pads:
+            if pad:
+                parent = pad.get_parent()
+                if parent and hasattr(parent, "release_request_pad"):
+                    parent.release_request_pad(pad)
+        self._tee_src_pads.clear()
         self._main_loop = None
 
     def _run_loop(self) -> None:
@@ -164,6 +213,36 @@ class DeepStreamPipeline:
             raise RuntimeError("Source bin does not expose a src pad")
         if srcpad.link(sinkpad) != Gst.PadLinkReturn.OK:
             raise RuntimeError("Failed to link source bin to streammux")
+
+    def _link_tee_to_queue(self, tee, queue):
+        srcpad = tee.get_request_pad("src_%u")
+        if not srcpad:
+            raise RuntimeError("Failed to request src pad from tee")
+        sinkpad = queue.get_static_pad("sink")
+        if not sinkpad:
+            raise RuntimeError("Queue missing sink pad")
+        if srcpad.link(sinkpad) != Gst.PadLinkReturn.OK:
+            raise RuntimeError("Failed to link tee to queue")
+        self._tee_src_pads.append(srcpad)
+
+    def _on_new_sample(self, sink):
+        if not self._frame_callback:
+            return Gst.FlowReturn.OK
+        sample = sink.emit("pull-sample")
+        if sample is None:
+            return Gst.FlowReturn.EOS
+        buffer = sample.get_buffer()
+        if buffer is None:
+            return Gst.FlowReturn.OK
+        success, mapinfo = buffer.map(Gst.MapFlags.READ)
+        if not success:
+            return Gst.FlowReturn.OK
+        try:
+            data = bytes(mapinfo.data)
+            self._frame_callback(data)
+        finally:
+            buffer.unmap(mapinfo)
+        return Gst.FlowReturn.OK
 
 
 __all__ = ["DeepStreamPipeline"]

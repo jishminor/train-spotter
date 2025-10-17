@@ -35,7 +35,8 @@ class FrameBroadcaster:
                 frame = self._frame
             payload = (
                 boundary
-                + b"Content-Type: image/jpeg\r\n\r\n"
+                + b"Content-Type: image/jpeg\r\n"
+                + f"Content-Length: {len(frame)}\r\n\r\n".encode("ascii")
                 + frame
                 + b"\r\n"
             )

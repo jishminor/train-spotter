@@ -21,6 +21,7 @@ from train_spotter.storage import (
 )
 from train_spotter.ui.display import OverlayController
 from train_spotter.web import FrameBroadcaster, create_app
+from train_spotter.service.roi import ROIConfig, load_roi_config
 
 LOGGER = logging.getLogger(__name__)
 
@@ -110,6 +111,14 @@ def main() -> None:
     configure_logging(args.log_level)
     app_config = resolve_config(args.config)
     LOGGER.info("Loaded configuration for camera %s", app_config.camera_id)
+    roi_config: ROIConfig | None = None
+    try:
+        roi_config = load_roi_config(app_config.roi_config_path)
+        LOGGER.info("Loaded ROI configuration from %s", app_config.roi_config_path)
+    except FileNotFoundError:
+        LOGGER.warning("ROI configuration not found at %s; using defaults", app_config.roi_config_path)
+    except ValueError as exc:
+        LOGGER.error("Failed to load ROI configuration: %s", exc)
 
     event_bus = EventBus()
     database = DatabaseManager(
@@ -124,7 +133,13 @@ def main() -> None:
 
     pipeline: Optional[DeepStreamPipeline] = None
     if not args.web_only:
-        pipeline = DeepStreamPipeline(app_config, event_bus, overlay)
+        pipeline = DeepStreamPipeline(
+            app_config,
+            event_bus,
+            overlay_controller=overlay,
+            roi_config=roi_config,
+            frame_callback=broadcaster.update_frame,
+        )
         pipeline.build()
         pipeline.start()
     else:

@@ -19,6 +19,9 @@ train_spotter/
   web/               # Flask dashboard & streaming endpoints
   service/           # Application orchestration and configuration glue
   data/              # ROI definitions and static assets
+  configs/           # DeepStream nvinfer/tracker configuration templates
+  deployment/        # Systemd unit and deployment helpers
+  tools/             # Utility scripts (e.g. ROI calibration snapshot)
 ```
 
 The code base is structured to run directly on the Jetson Xavier AGX and assumes NVIDIA's DeepStream SDK is already installed (including the `pyds` Python bindings).
@@ -30,7 +33,7 @@ The code base is structured to run directly on the Jetson Xavier AGX and assumes
    ```bash
    pip install -r requirements.txt
    ```
-4. Calibrate regions of interest with the provided tooling (TBD).
+4. Calibrate regions of interest using `tools/capture_snapshot.py` to grab a reference frame and update `train_spotter/data/roi_config.json`.
 5. Launch the application:
    ```bash
    python -m train_spotter.service.main --config path/to/config.json
@@ -45,5 +48,16 @@ python -m train_spotter.service.main --web-only
 ```
 
 The default dashboard listens on `0.0.0.0:8080`. Adjust the host/port within the configuration file if required.
+
+## Deployment Aids
+- `configs/trafficcamnet_primary.txt` – base nvinfer configuration targeting the bundled TrafficCamNet model. Adjust paths if your DeepStream installation differs.
+- `configs/iou_tracker_config.txt` – IOU tracker defaults suitable for roadway scenes.
+- `tools/capture_snapshot.py` – capture a camera still for ROI calibration (`python tools/capture_snapshot.py snapshots/site.png`).
+- `deployment/train-spotter.service` – example systemd unit (update user, working directory, and config paths before enabling).
+
+## Next Steps
+- Refine ROI coordinates and thresholds for your specific installation.
+- Harden DeepStream configuration for production (INT8 calibration, batching, etc.).
+- Add alerting or metrics export if train detection feeds downstream systems.
 
 Additional documentation will be added as components are implemented.

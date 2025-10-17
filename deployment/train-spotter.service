@@ -1,0 +1,19 @@
+[Unit]
+Description=Train Spotter DeepStream Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jetson
+Group=jetson
+WorkingDirectory=/opt/train-spotter
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m train_spotter.service.main --config /etc/train-spotter/config.json
+Restart=on-failure
+RestartSec=5
+# Ensure DeepStream and display permissions are available
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+
+[Install]
+WantedBy=multi-user.target
