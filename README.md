@@ -29,8 +29,12 @@ The code base is structured to run directly on the Jetson Xavier AGX and assumes
 ## Getting Started
 1. Ensure JetPack and DeepStream are installed and the camera is accessible (e.g. `nvarguscamerasrc`).
 2. Clone this repository onto the device.
-3. Create a Python environment with DeepStream dependencies and install Python requirements:
+3. Create and activate a virtual environment using the pyenv-installed Python 3.11.4:
    ```bash
+   pyenv shell 3.11.4
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install --upgrade pip
    pip install -r requirements.txt
    ```
 4. Calibrate regions of interest using `tools/capture_snapshot.py` to grab a reference frame and update `train_spotter/data/roi_config.json`.
@@ -51,11 +55,11 @@ The default dashboard listens on `0.0.0.0:8080`. Adjust the host/port within the
 
 ### Running tests
 
-Install dev dependencies and invoke pytest:
+Install dev dependencies (after activating the `pyenv` virtualenv) and invoke pytest via the selected interpreter:
 
 ```bash
 pip install -r requirements.txt
-pytest
+python -m pytest
 ```
 
 ## Deployment Aids
