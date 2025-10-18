@@ -157,6 +157,8 @@ class DeepStreamPipeline:
             else:
                 LOGGER.warning("Failed to attach analytics probe; tracker src pad missing")
 
+        self._log_pipeline_layout()
+
     def start(self) -> None:
         if self._pipeline is None:
             self.build()
@@ -262,10 +264,48 @@ class DeepStreamPipeline:
                 LOGGER.warning("Tracker property '%s' not supported; skipping", prop_name)
 
     def _create_source_bin(self, source_desc: str):
-        bin_desc = f"{source_desc} ! nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! queue"
+        source_desc = source_desc.strip()
+        # Support both minimal and fully-specified pipelines; ensure a queue terminates the bin
+        if "!" in source_desc:
+            parts = [segment.strip() for segment in source_desc.split("!") if segment.strip()]
+            if not parts:
+                raise RuntimeError("Camera source description is empty after parsing")
+            if not parts[-1].startswith("queue"):
+                parts.append("queue")
+            bin_desc = " ! ".join(parts)
+        else:
+            bin_desc = (
+                f"{source_desc} ! nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! queue"
+            )
+        LOGGER.debug("Source bin description: %s", bin_desc)
         source_bin = Gst.parse_bin_from_description(bin_desc, True)
         source_bin.set_name("source-bin")
         return source_bin
+
+    def _log_pipeline_layout(self) -> None:
+        if not LOGGER.isEnabledFor(logging.DEBUG) or self._pipeline is None:
+            return
+        try:
+            iterator = self._pipeline.iterate_elements()
+            element_descriptions: list[str] = []
+            while True:
+                res, element = iterator.next()
+                if res == Gst.IteratorResult.OK and element is not None:
+                    factory = element.get_factory()
+                    if factory is not None:
+                        element_descriptions.append("%s[%s]" % (element.get_name(), factory.get_name()))
+                    else:
+                        element_descriptions.append(element.get_name())
+                elif res == Gst.IteratorResult.DONE:
+                    break
+                elif res == Gst.IteratorResult.RESYNC:
+                    iterator = self._pipeline.iterate_elements()
+                elif res == Gst.IteratorResult.ERROR:
+                    break
+            if element_descriptions:
+                LOGGER.debug("Pipeline elements: %s", " -> ".join(element_descriptions))
+        except Exception:
+            LOGGER.exception("Failed to log pipeline elements")
 
     def _link_source_to_streammux(self, source_bin, streammux):
         sinkpad = streammux.get_request_pad("sink_0")
