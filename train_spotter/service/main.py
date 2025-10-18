@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import threading
 import time
 from typing import Optional
@@ -69,6 +70,15 @@ def parse_args() -> argparse.Namespace:
         help="Run only the web dashboard (expects external pipeline)",
     )
     parser.add_argument(
+        "--passthrough",
+        action="store_true",
+        help="Skip inference and stream raw camera feed to the dashboard",
+    )
+    parser.add_argument(
+        "--gst-debug",
+        help="Set GST_DEBUG for detailed GStreamer logging (e.g. '3' or 'nvarguscamerasrc:5')",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -108,7 +118,11 @@ def run_web_server(app_config: AppConfig, db: DatabaseManager, broadcaster: Fram
 
 def main() -> None:
     args = parse_args()
+    if args.gst_debug:
+        os.environ["GST_DEBUG"] = args.gst_debug
     configure_logging(args.log_level)
+    if args.gst_debug:
+        LOGGER.info("GST_DEBUG set to %s", args.gst_debug)
     app_config = resolve_config(args.config)
     LOGGER.info("Loaded configuration for camera %s", app_config.camera_id)
     roi_config: ROIConfig | None = None
@@ -133,12 +147,15 @@ def main() -> None:
 
     pipeline: Optional[DeepStreamPipeline] = None
     if not args.web_only:
+        if args.passthrough:
+            LOGGER.info("Passthrough mode enabled; inference and tracking will be skipped")
         pipeline = DeepStreamPipeline(
             app_config,
             event_bus,
             overlay_controller=overlay,
             roi_config=roi_config,
             frame_callback=broadcaster.update_frame,
+            enable_inference=not args.passthrough,
         )
         pipeline.build()
         pipeline.start()

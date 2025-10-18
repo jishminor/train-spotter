@@ -34,6 +34,7 @@ class DeepStreamPipeline:
         overlay_controller=None,
         roi_config: ROIConfig | None = None,
         frame_callback: Optional[Callable[[bytes], None]] = None,
+        enable_inference: bool = True,
     ) -> None:
         self._config = config
         self._event_bus = event_bus
@@ -41,7 +42,12 @@ class DeepStreamPipeline:
         self._main_loop: Optional[GObject.MainLoop] = None
         self._bus_watch_id: Optional[int] = None
         self._thread: Optional[threading.Thread] = None
-        self._analytics = StreamAnalytics(config, event_bus, overlay_controller, roi_config)
+        self._enable_inference = enable_inference
+        self._analytics = (
+            StreamAnalytics(config, event_bus, overlay_controller, roi_config)
+            if enable_inference
+            else None
+        )
         self._frame_callback = frame_callback
         self._tee_src_pads: list[Gst.Pad] = []
         self._appsink: Optional[Gst.Element] = None
@@ -61,15 +67,18 @@ class DeepStreamPipeline:
         streammux.set_property("live-source", 1)
         streammux.set_property("batched-push-timeout", 4000000)
 
-        primary_infer = self._make_element("nvinfer", "primary-infer")
-        primary_infer.set_property(
-            "config-file-path", self._config.vehicle_tracking.infer_primary_config_path
-        )
+        primary_infer = None
+        tracker = None
+        if self._enable_inference:
+            primary_infer = self._make_element("nvinfer", "primary-infer")
+            primary_infer.set_property(
+                "config-file-path", self._config.vehicle_tracking.infer_primary_config_path
+            )
 
-        tracker = self._make_element("nvtracker", "tracker")
-        tracker_config_path = self._config.vehicle_tracking.tracker_config_path
-        if tracker_config_path:
-            self._configure_tracker(tracker, tracker_config_path)
+            tracker = self._make_element("nvtracker", "tracker")
+            tracker_config_path = self._config.vehicle_tracking.tracker_config_path
+            if tracker_config_path:
+                self._configure_tracker(tracker, tracker_config_path)
 
         nvvidconv = self._make_element("nvvideoconvert", "video-converter")
         nvosd = self._make_element("nvdsosd", "on-screen-display")
@@ -92,31 +101,40 @@ class DeepStreamPipeline:
         appsink.connect("new-sample", self._on_new_sample)
         self._appsink = appsink
 
-        elements = [
-            streammux,
-            primary_infer,
-            tracker,
-            nvvidconv,
-            nvosd,
-            tee,
-            queue_display,
-            sink,
-            queue_web,
-            nvjpegenc,
-            appsink,
-        ]
+        elements = [streammux]
+        if primary_infer is not None:
+            elements.append(primary_infer)
+        if tracker is not None:
+            elements.append(tracker)
+        elements.extend(
+            [
+                nvvidconv,
+                nvosd,
+                tee,
+                queue_display,
+                sink,
+                queue_web,
+                nvjpegenc,
+                appsink,
+            ]
+        )
 
         self._pipeline.add(source_bin)
         for element in elements:
             self._pipeline.add(element)
 
         self._link_source_to_streammux(source_bin, streammux)
-        if not streammux.link(primary_infer):
-            raise RuntimeError("Failed to link streammux to nvinfer")
-        if not primary_infer.link(tracker):
-            raise RuntimeError("Failed to link nvinfer to tracker")
-        if not tracker.link(nvvidconv):
-            raise RuntimeError("Failed to link tracker to nvvidconv")
+        upstream = streammux
+        if self._enable_inference:
+            if primary_infer is None or tracker is None:
+                raise RuntimeError("Inference components were not initialised properly")
+            if not upstream.link(primary_infer):
+                raise RuntimeError("Failed to link streammux to nvinfer")
+            if not primary_infer.link(tracker):
+                raise RuntimeError("Failed to link nvinfer to tracker")
+            upstream = tracker
+        if not upstream.link(nvvidconv):
+            raise RuntimeError("Failed to link previous element to nvvidconv")
         if not nvvidconv.link(nvosd):
             raise RuntimeError("Failed to link nvvidconv to nvosd")
         if not nvosd.link(tee):
@@ -130,13 +148,14 @@ class DeepStreamPipeline:
         if not nvjpegenc.link(appsink):
             raise RuntimeError("Failed to link nvjpegenc to appsink")
 
-        tracker_src_pad = tracker.get_static_pad("src")
-        if tracker_src_pad:
-            tracker_src_pad.add_probe(
-                Gst.PadProbeType.BUFFER, analytics_pad_probe, self._analytics
-            )
-        else:
-            LOGGER.warning("Failed to attach analytics probe; tracker src pad missing")
+        if self._enable_inference and self._analytics is not None:
+            tracker_src_pad = tracker.get_static_pad("src") if tracker is not None else None
+            if tracker_src_pad:
+                tracker_src_pad.add_probe(
+                    Gst.PadProbeType.BUFFER, analytics_pad_probe, self._analytics
+                )
+            else:
+                LOGGER.warning("Failed to attach analytics probe; tracker src pad missing")
 
     def start(self) -> None:
         if self._pipeline is None:
