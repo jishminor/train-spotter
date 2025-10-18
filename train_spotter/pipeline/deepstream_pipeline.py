@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import configparser
 import logging
+import shlex
 import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import unquote, urlparse
 
 import gi
 
@@ -52,6 +54,7 @@ class DeepStreamPipeline:
         self._tee_src_pads: list[Gst.Pad] = []
         self._appsink: Optional[Gst.Element] = None
         self._appsink_handler: Optional[int] = None
+        self._source_is_live: bool = True
         Gst.init(None)
 
     def build(self) -> None:
@@ -65,10 +68,8 @@ class DeepStreamPipeline:
         streammux.set_property("batch-size", 1)
         streammux.set_property("width", 640)
         streammux.set_property("height", 480)
-        streammux.set_property("live-source", 1)
-        streammux.set_property("batched-push-timeout", 20000)  # 20 ms
-        streammux.set_property("sync-inputs", 0)
-        streammux.set_property("attach-sys-ts", 1)
+        streammux.set_property("live-source", 1 if self._source_is_live else 0)
+        streammux.set_property("batched-push-timeout", 4000000)
 
         primary_infer = None
         tracker = None
@@ -280,6 +281,13 @@ class DeepStreamPipeline:
 
     def _create_source_bin(self, source_desc: str):
         source_desc = source_desc.strip()
+        file_location = self._extract_file_location(source_desc)
+        if file_location:
+            file_path = self._resolve_file_path(file_location)
+            LOGGER.debug("Constructing file source bin for %s", file_path)
+            self._source_is_live = False
+            return self._create_file_source_bin(file_path)
+
         # Support both minimal and fully-specified pipelines; ensure a queue terminates the bin
         if "!" in source_desc:
             parts = [segment.strip() for segment in source_desc.split("!") if segment.strip()]
@@ -293,9 +301,121 @@ class DeepStreamPipeline:
                 f"{source_desc} ! nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! queue"
             )
         LOGGER.debug("Source bin description: %s", bin_desc)
+        self._source_is_live = True
         source_bin = Gst.parse_bin_from_description(bin_desc, True)
         source_bin.set_name("source-bin")
         return source_bin
+
+    def _extract_file_location(self, source_desc: str) -> Optional[str]:
+        if not source_desc:
+            return None
+        if source_desc.startswith("file://"):
+            return source_desc
+        if source_desc.startswith("filesrc"):
+            first_segment = source_desc.split("!", 1)[0]
+            tokens = shlex.split(first_segment)
+            for idx, token in enumerate(tokens[1:], start=1):
+                if token.startswith("location="):
+                    return token.split("=", 1)[1]
+                if token == "location" and idx + 1 < len(tokens):
+                    return tokens[idx + 1]
+        return None
+
+    def _resolve_file_path(self, location: str) -> str:
+        if location.startswith("file://"):
+            parsed = urlparse(location)
+            path = unquote(parsed.path)
+        else:
+            path = location
+        resolved = Path(path).expanduser()
+        try:
+            return str(resolved.resolve())
+        except FileNotFoundError:
+            LOGGER.warning("File source %s does not exist; pipeline may fail", resolved)
+            return str(resolved)
+
+    def _create_file_source_bin(self, location: str) -> Gst.Bin:
+        self._source_is_live = False
+        bin_ = Gst.Bin.new("source-bin")
+        file_src = self._make_element("filesrc", "file-source")
+        file_src.set_property("location", location)
+        demux = self._make_element("qtdemux", "file-demux")
+        parser = self._make_element("h264parse", "file-h264parse")
+        parser.set_property("config-interval", -1)
+        decoder = self._make_element("nvv4l2decoder", "file-decoder")
+        converter = self._make_element("nvvideoconvert", "file-converter")
+        capsfilter = self._make_element("capsfilter", "file-capsfilter")
+        capsfilter.set_property(
+            "caps", Gst.Caps.from_string("video/x-raw(memory:NVMM),format=NV12")
+        )
+        video_queue = self._make_element("queue", "file-video-queue")
+        video_queue.set_property("leaky", 2)
+        video_queue.set_property("max-size-buffers", 4)
+
+        audio_queue = self._make_element("queue", "file-audio-queue")
+        audio_queue.set_property("max-size-buffers", 4)
+        audio_queue.set_property("leaky", 2)
+        audio_sink = self._make_element("fakesink", "file-audio-fakesink")
+        audio_sink.set_property("sync", False)
+        audio_sink.set_property("async", False)
+
+        for element in (
+            file_src,
+            demux,
+            parser,
+            decoder,
+            converter,
+            capsfilter,
+            video_queue,
+            audio_queue,
+            audio_sink,
+        ):
+            bin_.add(element)
+
+        if not file_src.link(demux):
+            raise RuntimeError("Failed to link filesrc to demux")
+        if not parser.link(decoder):
+            raise RuntimeError("Failed to link parser to decoder")
+        if not decoder.link(converter):
+            raise RuntimeError("Failed to link decoder to converter")
+        if not converter.link(capsfilter):
+            raise RuntimeError("Failed to link converter to capsfilter")
+        if not capsfilter.link(video_queue):
+            raise RuntimeError("Failed to link capsfilter to queue")
+        if not audio_queue.link(audio_sink):
+            raise RuntimeError("Failed to link audio queue to fakesink")
+
+        def _handle_pad(demuxer, pad):
+            caps = pad.get_current_caps()
+            media_type = caps.get_structure(0).get_name() if caps and caps.get_size() > 0 else ""
+            if media_type.startswith("video/"):
+                sink_pad = parser.get_static_pad("sink")
+            elif media_type.startswith("audio/"):
+                sink_pad = audio_queue.get_static_pad("sink")
+            else:
+                sink_pad = None
+
+            if sink_pad is None or sink_pad.is_linked():
+                return
+
+            result = pad.link(sink_pad)
+            if result != Gst.PadLinkReturn.OK:
+                LOGGER.warning(
+                    "Failed to link demux pad %s to %s: %s",
+                    pad.get_name(),
+                    sink_pad.get_parent_element().get_name()
+                    if sink_pad.get_parent_element()
+                    else "sink",
+                    result,
+                )
+
+        demux.connect("pad-added", _handle_pad)
+
+        ghost_pad = video_queue.get_static_pad("src")
+        if ghost_pad is None:
+            raise RuntimeError("Video queue missing src pad")
+        bin_.add_pad(Gst.GhostPad.new("src", ghost_pad))
+        return bin_
 
     def _log_pipeline_layout(self) -> None:
         if not LOGGER.isEnabledFor(logging.DEBUG) or self._pipeline is None:

@@ -12,8 +12,11 @@ from train_spotter.service.roi import ROIConfig
 from train_spotter.storage import EventBus, EventMessage, EventType
 from train_spotter.storage.db import TrainEvent, VehicleEvent
 try:  # pragma: no cover - gi is unavailable in unit tests
+    import gi
+
+    gi.require_version("Gst", "1.0")
     from gi.repository import Gst  # type: ignore
-except ImportError:  # pragma: no cover - DeepStream runtime required
+except (ImportError, ValueError):  # pragma: no cover - DeepStream runtime required
     Gst = None  # type: ignore
 
 if TYPE_CHECKING:
@@ -222,14 +225,11 @@ class StreamAnalytics:
     def process_frame(self, batch_meta) -> None:
         """Entry point for pad probe to process NvDsBatchMeta."""
 
-        LOGGER.debug("Analytics processing frame batch_meta=%s", batch_meta)
         if pyds is None or batch_meta is None:
-            LOGGER.debug("Analytics skipping frame; batch/meta missing")
             return
         l_frame = batch_meta.frame_meta_list
         while l_frame is not None:
             frame_meta = self._cast_frame_meta(l_frame.data)
-            LOGGER.debug("Processing frame_meta=%s", frame_meta)
             timestamp = time.time()
             detections = self._extract_objects(frame_meta)
             coverage = self._estimate_train_coverage(detections)
@@ -242,7 +242,6 @@ class StreamAnalytics:
             if self._overlay is not None:
                 self._overlay.apply_to_frame(frame_meta, batch_meta)
             l_frame = l_frame.next
-        LOGGER.debug("Analytics finished frame processing")
 
     def _cast_frame_meta(self, data):
         try:
