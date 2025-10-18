@@ -55,6 +55,7 @@ class DeepStreamPipeline:
         self._appsink: Optional[Gst.Element] = None
         self._appsink_handler: Optional[int] = None
         self._source_is_live: bool = True
+        self._stop_event = threading.Event()
         Gst.init(None)
 
     def build(self) -> None:
@@ -168,6 +169,7 @@ class DeepStreamPipeline:
     def start(self) -> None:
         if self._pipeline is None:
             self.build()
+        self._stop_event.clear()
         if self._main_loop is not None:
             LOGGER.warning("Pipeline already running")
             return
@@ -193,13 +195,35 @@ class DeepStreamPipeline:
 
     def stop(self) -> None:
         if self._pipeline is None:
+            self._stop_event.set()
             return
         LOGGER.info("Stopping DeepStream pipeline")
-        self._pipeline.set_state(Gst.State.NULL)
-        if self._main_loop:
-            self._main_loop.quit()
-        if self._thread and self._thread.is_alive() and threading.current_thread() is not self._thread:
-            self._thread.join(timeout=2.0)
+
+        pipeline = self._pipeline
+
+        def _shutdown_pipeline() -> bool:
+            try:
+                if pipeline is not None:
+                    pipeline.set_state(Gst.State.NULL)
+            except Exception:
+                LOGGER.exception("Failed to set pipeline state to NULL")
+            if self._main_loop:
+                try:
+                    self._main_loop.quit()
+                except Exception:
+                    LOGGER.exception("Failed to quit main loop")
+            return False
+
+        current_thread = threading.current_thread()
+        if self._thread and self._thread.is_alive() and current_thread is not self._thread:
+            if self._main_loop:
+                GLib.idle_add(_shutdown_pipeline, priority=GLib.PRIORITY_HIGH)
+            else:
+                _shutdown_pipeline()
+            self._thread.join(timeout=5.0)
+        else:
+            _shutdown_pipeline()
+
         if self._bus_watch_id is not None:
             GLib.source_remove(self._bus_watch_id)
             self._bus_watch_id = None
@@ -210,6 +234,8 @@ class DeepStreamPipeline:
                     parent.release_request_pad(pad)
         self._tee_src_pads.clear()
         self._main_loop = None
+        self._pipeline = None
+        self._stop_event.set()
 
     def _run_loop(self) -> None:
         assert self._main_loop is not None
@@ -416,6 +442,16 @@ class DeepStreamPipeline:
             raise RuntimeError("Video queue missing src pad")
         bin_.add_pad(Gst.GhostPad.new("src", ghost_pad))
         return bin_
+
+    def wait_for_stop(self, timeout: Optional[float] = None) -> bool:
+        """Block until the pipeline has stopped or timeout expires."""
+
+        return self._stop_event.wait(timeout)
+
+    def has_stopped(self) -> bool:
+        """Return True if the pipeline has been stopped."""
+
+        return self._stop_event.is_set()
 
     def _log_pipeline_layout(self) -> None:
         if not LOGGER.isEnabledFor(logging.DEBUG) or self._pipeline is None:

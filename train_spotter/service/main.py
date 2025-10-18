@@ -172,7 +172,12 @@ def main() -> None:
 
     try:
         while True:
-            time.sleep(1)
+            if pipeline is not None:
+                if pipeline.wait_for_stop(timeout=1.0):
+                    LOGGER.info("Pipeline stopped; exiting main loop")
+                    break
+            else:
+                time.sleep(1)
     except KeyboardInterrupt:
         LOGGER.info("Shutdown requested")
     finally:
