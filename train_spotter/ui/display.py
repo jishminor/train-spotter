@@ -76,10 +76,14 @@ class OverlayController:
             lane_id = message.payload.lane_id
             self._state.vehicle_counts[lane_id] = self._state.vehicle_counts.get(lane_id, 0) + 1
 
-    def apply_to_frame(self, frame_meta) -> None:
+    def apply_to_frame(self, frame_meta, batch_meta=None) -> None:
         if pyds is None or frame_meta is None:
             return
-        display_meta = pyds.nvds_acquire_display_meta_from_pool(frame_meta.batch_meta)  # type: ignore[attr-defined]
+        batch_meta_obj = batch_meta if batch_meta is not None else getattr(frame_meta, "batch_meta", None)
+        if batch_meta_obj is None:
+            LOGGER.debug("Batch metadata unavailable; skipping overlay draw")
+            return
+        display_meta = pyds.nvds_acquire_display_meta_from_pool(batch_meta_obj)  # type: ignore[attr-defined]
         if display_meta is None:
             LOGGER.debug("Failed to acquire display meta")
             return

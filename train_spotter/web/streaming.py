@@ -20,6 +20,8 @@ class FrameBroadcaster:
             if self._closed:
                 return
             self._frame = frame
+            # Debugging aid to confirm frames reach broadcaster
+            # LOGGER not available here; rely on print? No, avoid.
             self._condition.notify_all()
 
     def mjpeg_stream(self, fps: int = 10) -> Generator[bytes, None, None]:

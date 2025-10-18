@@ -51,6 +51,7 @@ class DeepStreamPipeline:
         self._frame_callback = frame_callback
         self._tee_src_pads: list[Gst.Pad] = []
         self._appsink: Optional[Gst.Element] = None
+        self._appsink_handler: Optional[int] = None
         Gst.init(None)
 
     def build(self) -> None:
@@ -65,7 +66,9 @@ class DeepStreamPipeline:
         streammux.set_property("width", 640)
         streammux.set_property("height", 480)
         streammux.set_property("live-source", 1)
-        streammux.set_property("batched-push-timeout", 4000000)
+        streammux.set_property("batched-push-timeout", 20000)  # 20 ms
+        streammux.set_property("sync-inputs", 0)
+        streammux.set_property("attach-sys-ts", 1)
 
         primary_infer = None
         tracker = None
@@ -98,7 +101,9 @@ class DeepStreamPipeline:
         appsink = self._make_element("appsink", "web-appsink")
         appsink.set_property("emit-signals", True)
         appsink.set_property("sync", False)
-        appsink.connect("new-sample", self._on_new_sample)
+        appsink.set_property("max-buffers", 1)
+        appsink.set_property("drop", True)
+        self._appsink_handler = appsink.connect("new-sample", self._on_new_sample)
         self._appsink = appsink
 
         elements = [streammux]
@@ -341,15 +346,19 @@ class DeepStreamPipeline:
 
     def _on_new_sample(self, sink):
         if not self._frame_callback:
+            LOGGER.debug("Appsink sample dropped: no frame callback")
             return Gst.FlowReturn.OK
         sample = sink.emit("pull-sample")
         if sample is None:
+            LOGGER.debug("Appsink sample pull returned EOS")
             return Gst.FlowReturn.EOS
         buffer = sample.get_buffer()
         if buffer is None:
+            LOGGER.debug("Appsink sample has no buffer")
             return Gst.FlowReturn.OK
         success, mapinfo = buffer.map(Gst.MapFlags.READ)
         if not success:
+            LOGGER.debug("Appsink buffer map failed")
             return Gst.FlowReturn.OK
         try:
             data = bytes(mapinfo.data)

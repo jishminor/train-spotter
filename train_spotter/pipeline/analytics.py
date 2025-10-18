@@ -11,6 +11,10 @@ from train_spotter.service.config import AppConfig, TrainDetectionSettings
 from train_spotter.service.roi import ROIConfig
 from train_spotter.storage import EventBus, EventMessage, EventType
 from train_spotter.storage.db import TrainEvent, VehicleEvent
+try:  # pragma: no cover - gi is unavailable in unit tests
+    from gi.repository import Gst  # type: ignore
+except ImportError:  # pragma: no cover - DeepStream runtime required
+    Gst = None  # type: ignore
 
 if TYPE_CHECKING:
     from train_spotter.ui.display import OverlayController
@@ -218,11 +222,14 @@ class StreamAnalytics:
     def process_frame(self, batch_meta) -> None:
         """Entry point for pad probe to process NvDsBatchMeta."""
 
+        LOGGER.debug("Analytics processing frame batch_meta=%s", batch_meta)
         if pyds is None or batch_meta is None:
+            LOGGER.debug("Analytics skipping frame; batch/meta missing")
             return
         l_frame = batch_meta.frame_meta_list
         while l_frame is not None:
             frame_meta = self._cast_frame_meta(l_frame.data)
+            LOGGER.debug("Processing frame_meta=%s", frame_meta)
             timestamp = time.time()
             detections = self._extract_objects(frame_meta)
             coverage = self._estimate_train_coverage(detections)
@@ -233,8 +240,9 @@ class StreamAnalytics:
             # At end of frame, finalise stale tracks
             self._vehicle_hooks.finalise_tracks(timestamp)
             if self._overlay is not None:
-                self._overlay.apply_to_frame(frame_meta)
+                self._overlay.apply_to_frame(frame_meta, batch_meta)
             l_frame = l_frame.next
+        LOGGER.debug("Analytics finished frame processing")
 
     def _cast_frame_meta(self, data):
         try:
@@ -372,14 +380,14 @@ def analytics_pad_probe(pad, info, analytics: StreamAnalytics):
     """Pad probe wrapper to integrate with GStreamer."""
 
     if pyds is None:
-        return 0
+        return Gst.PadProbeReturn.OK if Gst is not None else 0
     buffer = info.get_buffer()
     if not buffer:
         LOGGER.debug("Empty buffer encountered in analytics_pad_probe")
-        return 0
+        return Gst.PadProbeReturn.OK if Gst is not None else 0
     batch_meta = pyds.gst_buffer_get_nvds_batch_meta(hash(buffer))  # type: ignore[attr-defined]
     analytics.process_frame(batch_meta)
-    return 0
+    return Gst.PadProbeReturn.OK if Gst is not None else 0
 
 
 __all__ = ["StreamAnalytics", "analytics_pad_probe"]

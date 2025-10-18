@@ -142,7 +142,7 @@ def main() -> None:
         ensure_fsync=app_config.storage.ensure_fsync,
     )
     broadcaster = FrameBroadcaster()
-    overlay = OverlayController(event_bus)
+    overlay = OverlayController(event_bus) if app_config.display.enable_overlay else None
     event_processor = EventProcessor(event_bus, database)
 
     web_thread = run_web_server(app_config, database, broadcaster)
@@ -176,7 +176,8 @@ def main() -> None:
     except KeyboardInterrupt:
         LOGGER.info("Shutdown requested")
     finally:
-        overlay.stop()
+        if overlay is not None:
+            overlay.stop()
         event_processor.stop()
         broadcaster.close()
         if pipeline is not None:
