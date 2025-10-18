@@ -7,9 +7,8 @@ import logging
 import os
 import threading
 import time
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-from train_spotter.pipeline import DeepStreamPipeline
 from train_spotter.service.config import AppConfig, resolve_config
 from train_spotter.storage import (
     DatabaseManager,
@@ -23,6 +22,9 @@ from train_spotter.storage import (
 from train_spotter.ui.display import OverlayController
 from train_spotter.web import FrameBroadcaster, create_app
 from train_spotter.service.roi import ROIConfig, load_roi_config
+
+if TYPE_CHECKING:
+    from train_spotter.pipeline import DeepStreamPipeline
 
 LOGGER = logging.getLogger(__name__)
 
@@ -145,7 +147,13 @@ def main() -> None:
 
     web_thread = run_web_server(app_config, database, broadcaster)
 
-    pipeline: Optional[DeepStreamPipeline] = None
+    try:
+        from train_spotter.pipeline import DeepStreamPipeline
+    except ImportError as exc:
+        LOGGER.critical("Failed to initialise DeepStream pipeline: %s", exc)
+        raise SystemExit("DeepStream Python bindings (pyds) are required. Install them before running Train Spotter.") from exc
+
+    pipeline: Optional["DeepStreamPipeline"] = None
     if not args.web_only:
         if args.passthrough:
             LOGGER.info("Passthrough mode enabled; inference and tracking will be skipped")

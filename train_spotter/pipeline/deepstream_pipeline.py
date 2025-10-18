@@ -17,7 +17,6 @@ gi.require_version("GObject", "2.0")
 from gi.repository import GLib, GObject, Gst  # type: ignore
 
 from train_spotter.pipeline.analytics import StreamAnalytics, analytics_pad_probe
-from train_spotter.pipeline import analytics as analytics_module
 from train_spotter.service.config import AppConfig
 from train_spotter.service.roi import ROIConfig
 from train_spotter.storage import EventBus, EventMessage, EventType
@@ -76,16 +75,10 @@ class DeepStreamPipeline:
                 "config-file-path", self._config.vehicle_tracking.infer_primary_config_path
             )
 
+            tracker = self._make_element("nvtracker", "tracker")
             tracker_config_path = self._config.vehicle_tracking.tracker_config_path
-            tracker = None
             if tracker_config_path:
-                if getattr(analytics_module, "pyds", None) is not None:
-                    tracker = self._make_element("nvtracker", "tracker")
-                    self._configure_tracker(tracker, tracker_config_path)
-                else:
-                    LOGGER.warning("pyds not available; skipping nvtracker")
-            else:
-                LOGGER.info("Tracker disabled; proceeding without nvtracker")
+                self._configure_tracker(tracker, tracker_config_path)
 
         nvvidconv = self._make_element("nvvideoconvert", "video-converter")
         nvosd = self._make_element("nvdsosd", "on-screen-display")
@@ -133,15 +126,13 @@ class DeepStreamPipeline:
         self._link_source_to_streammux(source_bin, streammux)
         upstream = streammux
         if self._enable_inference:
-            if primary_infer is None:
-                raise RuntimeError("Primary inference element was not initialised")
+            if primary_infer is None or tracker is None:
+                raise RuntimeError("Inference components were not initialised properly")
             if not upstream.link(primary_infer):
                 raise RuntimeError("Failed to link streammux to nvinfer")
-            upstream = primary_infer
-            if tracker is not None:
-                if not upstream.link(tracker):
-                    raise RuntimeError("Failed to link nvinfer to tracker")
-                upstream = tracker
+            if not primary_infer.link(tracker):
+                raise RuntimeError("Failed to link nvinfer to tracker")
+            upstream = tracker
         if not upstream.link(nvvidconv):
             raise RuntimeError("Failed to link previous element to nvvidconv")
         if not nvvidconv.link(nvosd):
@@ -157,8 +148,8 @@ class DeepStreamPipeline:
         if not nvjpegenc.link(appsink):
             raise RuntimeError("Failed to link nvjpegenc to appsink")
 
-        if self._enable_inference and self._analytics is not None and tracker is not None:
-            tracker_src_pad = tracker.get_static_pad("src")
+        if self._enable_inference and self._analytics is not None:
+            tracker_src_pad = tracker.get_static_pad("src") if tracker is not None else None
             if tracker_src_pad:
                 tracker_src_pad.add_probe(
                     Gst.PadProbeType.BUFFER, analytics_pad_probe, self._analytics

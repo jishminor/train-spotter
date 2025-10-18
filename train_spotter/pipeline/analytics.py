@@ -17,8 +17,8 @@ if TYPE_CHECKING:
 
 try:
     import pyds  # type: ignore
-except ImportError:  # pragma: no cover - DeepStream runtime not available for tests
-    pyds = None  # type: ignore
+except ImportError as exc:  # pragma: no cover - DeepStream runtime required at runtime
+    raise ImportError("The NVIDIA 'pyds' module is required. Install the DeepStream Python bindings (e.g. python3-pyds) before running Train Spotter.") from exc
 
 LOGGER = logging.getLogger(__name__)
 
