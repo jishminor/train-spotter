@@ -63,7 +63,7 @@ python -m pytest
 ```
 
 ## Deployment Aids
-- `configs/trafficcamnet_primary.txt` – base nvinfer configuration targeting the bundled TrafficCamNet model. Adjust paths if your DeepStream installation differs.
+- `configs/trafficcamnet_yolo11.txt` – base nvinfer configuration targeting the bundled TrafficCamNet model. Adjust paths if your DeepStream installation differs.
 - `configs/iou_tracker_config.txt` – IOU tracker defaults suitable for roadway scenes.
 - `tools/capture_snapshot.py` – capture a camera still for ROI calibration (`python tools/capture_snapshot.py snapshots/site.png`).
 - `deployment/train-spotter.service` – example systemd unit (update user, working directory, and config paths before enabling).

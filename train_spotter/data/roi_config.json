@@ -3,10 +3,10 @@
   "train_roi": {
     "label": "main_track",
     "points": [
-      [0.05, 0.55],
-      [0.95, 0.55],
-      [0.95, 0.85],
-      [0.05, 0.85]
+      [0.06, 0.60],
+      [0.94, 0.60],
+      [0.94, 0.78],
+      [0.06, 0.78]
     ]
   },
   "road_lanes": [
@@ -15,36 +15,39 @@
       "polygon": {
         "label": "lane_1",
         "points": [
-          [0.10, 0.30],
-          [0.45, 0.30],
-          [0.45, 0.52],
-          [0.10, 0.52]
+          [0.10, 0.62],
+          [0.90, 0.62],
+          [0.90, 0.76],
+          [0.10, 0.76]
         ]
       },
       "exit_line": [
-        [0.45, 0.30],
-        [0.45, 0.52]
-      ]
-    },
-    {
-      "lane_id": "lane_2",
-      "polygon": {
-        "label": "lane_2",
-        "points": [
-          [0.55, 0.30],
-          [0.90, 0.30],
-          [0.90, 0.52],
-          [0.55, 0.52]
-        ]
-      },
-      "exit_line": [
-        [0.55, 0.30],
-        [0.55, 0.52]
+        [0.70, 0.62],
+        [0.70, 0.76]
       ]
     }
   ],
-  "exclusion_zones": [],
+  "exclusion_zones": [
+    {
+      "label": "lamp_top_left",
+      "points": [
+        [0.00, 0.00],
+        [0.22, 0.00],
+        [0.22, 0.28],
+        [0.00, 0.28]
+      ]
+    },
+    {
+      "label": "glare_top_center",
+      "points": [
+        [0.35, 0.00],
+        [0.65, 0.00],
+        [0.65, 0.18],
+        [0.35, 0.18]
+      ]
+    }
+  ],
   "metadata": {
-    "note": "Example ROI configuration - replace with calibrated zones"
+    "note": "Single tracking band along the wall; vertical tripline at ~70% width for counts."
   }
 }

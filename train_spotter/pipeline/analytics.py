@@ -274,6 +274,7 @@ class StreamAnalytics:
                 frame_width=frame_width,
                 frame_height=frame_height,
             )
+            LOGGER.debug("Detected object: %s", det)
             detections.append(det)
             l_obj = l_obj.next
         return detections

@@ -68,7 +68,8 @@ class DeepStreamPipeline:
         streammux = self._make_element("nvstreammux", "stream-muxer")
         streammux.set_property("batch-size", 1)
         streammux.set_property("width", 640)
-        streammux.set_property("height", 480)
+        streammux.set_property("height", 640)
+        streammux.set_property("enable-padding", True)
         streammux.set_property("live-source", 1 if self._source_is_live else 0)
         streammux.set_property("batched-push-timeout", 4000000)
 
@@ -474,7 +475,7 @@ class DeepStreamPipeline:
                 elif res == Gst.IteratorResult.ERROR:
                     break
             if element_descriptions:
-                LOGGER.debug("Pipeline elements: %s", " -> ".join(element_descriptions))
+                LOGGER.info("Pipeline elements: %s", " -> ".join(element_descriptions))
         except Exception:
             LOGGER.exception("Failed to log pipeline elements")
 

@@ -215,7 +215,7 @@ class AppConfig(BaseModel):
             },
             "vehicle_tracking": {
                 "lanes": [],
-                "infer_primary_config_path": "configs/trafficcamnet_primary.txt",
+                "infer_primary_config_path": "configs/trafficcamnet_yolo11.txt",
                 "tracker_config_path": "configs/iou_tracker_config.txt",
             },
         }
