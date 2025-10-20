@@ -1,33 +1,61 @@
-"""Flask application exposing live view and historical data."""
+"""Flask application exposing live view, WebRTC signaling metadata, and history."""
 
 from __future__ import annotations
 
 import datetime as dt
-from typing import Iterable, List
+import logging
+from typing import Optional
 
-from flask import Flask, Response, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 
 from train_spotter.service.config import AppConfig
 from train_spotter.storage import DatabaseManager
-from train_spotter.web.streaming import FrameBroadcaster
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _row_to_dict(row) -> dict:
     return {key: row[key] for key in row.keys()}
 
 
+def _resolve_signaling_host(configured_host: str, request_host: str) -> Optional[str]:
+    """Return host to use for signaling; None implies client should auto-detect."""
+    if configured_host in {"", "0.0.0.0", "::"}:
+        host_only = request_host.split(":", 1)[0]
+        return host_only or None
+    return configured_host
+
+
 def create_app(
     app_config: AppConfig,
     db: DatabaseManager,
-    frame_broadcaster: FrameBroadcaster,
 ) -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
 
     @app.route("/")
     def index():
+        signaling_host = _resolve_signaling_host(app_config.web.signaling_listen_host, request.host)
+        ws_scheme = "wss" if request.scheme == "https" else "ws"
+        signaling_url = (
+            f"{ws_scheme}://{signaling_host}:{app_config.web.signaling_port}"
+            if signaling_host
+            else None
+        )
+        mjpeg_host = _resolve_signaling_host(app_config.web.signaling_listen_host, request.host)
+        mjpeg_url = (
+            f"{ws_scheme}://{mjpeg_host}:{app_config.web.mjpeg_port}/mjpeg"
+            if mjpeg_host
+            else None
+        )
         return render_template(
             "index.html",
             web_config=app_config.web,
+            signaling_url=signaling_url,
+            signaling_host=signaling_host,
+            signaling_port=app_config.web.signaling_port,
+            mjpeg_url=mjpeg_url,
+            mjpeg_host=mjpeg_host,
+            mjpeg_port=app_config.web.mjpeg_port,
         )
 
     @app.route("/history")
@@ -40,14 +68,6 @@ def create_app(
             "history.html",
             trains=trains,
             vehicles=vehicles,
-        )
-
-    @app.route("/stream.mjpg")
-    def video_feed():
-        fps = app_config.web.mjpeg_framerate
-        return Response(
-            frame_broadcaster.mjpeg_stream(fps=fps),
-            mimetype="multipart/x-mixed-replace; boundary=frame",
         )
 
     @app.route("/api/status")

@@ -1,5 +1,5 @@
 {
-  "camera_source": "v4l2src device=/dev/video0 ! video/x-raw,format=YUY2,width=640,height=480,framerate=30/1 ! nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! queue",
+  "camera_source": "v4l2src device=/dev/video0 ! video/x-raw,format=YUY2,width=640,height=480,framerate=15/1 ! nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! queue",
   "train_detection": {
     "zone": {
       "polygon": {
@@ -29,9 +29,5 @@
     "lanes": [],
     "infer_primary_config_path": "configs/trafficcamnet_yolo11.txt",
     "tracker_config_path": "configs/iou_tracker_config.txt"
-  },
-  "display": {
-    "sink_type": "fakesink",
-    "enable_overlay": false
   }
 }

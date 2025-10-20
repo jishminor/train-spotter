@@ -1,13 +1,12 @@
 # Train Spotter
 
-A Jetson Xavier AGX application that uses DeepStream to analyse a rail-and-road scene, detect trains and track vehicles, record events to persistent storage, and expose both an on-device HDMI overlay and a lightweight web dashboard with live and historical views.
+A Jetson Xavier AGX application that uses DeepStream to analyse a rail-and-road scene, detect trains and track vehicles, record events to persistent storage, and expose a lightweight web dashboard with live and historical views.
 
 ## High-level Features
 - DeepStream-based video pipeline with CSI/USB camera support.
 - Train presence detection with duration logging.
 - Vehicle tracking and per-lane counts.
-- HDMI overlay showing live inference results directly on the device.
-- Web dashboard hosting live MJPEG stream and historical event summaries.
+- Web dashboard exposing low-latency WebRTC live view plus historical event summaries (with a dedicated signaling service).
 - SQLite-backed persistence for robust storage on performant embedded hardware.
 
 ## Repository Structure
@@ -15,7 +14,6 @@ A Jetson Xavier AGX application that uses DeepStream to analyse a rail-and-road 
 train_spotter/
   pipeline/          # DeepStream pipeline assembly & analytics integration
   storage/           # SQLite persistence, event bus utilities
-  ui/                # On-device display helpers
   web/               # Flask dashboard & streaming endpoints
   service/           # Application orchestration and configuration glue
   data/              # ROI definitions and static assets
@@ -78,7 +76,15 @@ If you are testing against a prerecorded DeepStream pipeline or another video so
 python -m train_spotter.service.main --web-only
 ```
 
-The default dashboard listens on `0.0.0.0:8080`. Adjust the host/port within the configuration file if required.
+The default dashboard listens on `0.0.0.0:8080`. Adjust the host/port within the configuration file if required. WebRTC signaling now comes from a standalone server (default `ws://<device>:8765`), so make sure that port is reachable from your LAN client devices.
+
+WebRTC output requires the GStreamer libnice plugin. Install it on the Jetson with:
+
+```bash
+sudo apt install gstreamer1.0-nice
+```
+
+Without libnice the dashboard will report that streaming is unavailable.
 
 ### Running tests
 
@@ -88,6 +94,11 @@ Install dev dependencies (after activating the `pyenv` virtualenv) and invoke py
 pip install -r requirements.txt
 python -m pytest
 ```
+
+Some optional tests rely on NVIDIA's TensorRT and PyCUDA packages. If those
+dependencies are unavailable on your development machine, run targeted suites
+(`python -m pytest train_spotter/tests`) or install the vendor SDK on the
+Jetson device before executing the full test run.
 
 ## Deployment Aids
 - `configs/trafficcamnet_yolo11.txt` – base nvinfer configuration targeting the bundled TrafficCamNet model. Adjust paths if your DeepStream installation differs.

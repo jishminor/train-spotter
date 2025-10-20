@@ -15,4 +15,4 @@ def test_appconfig_default_contains_core_sections() -> None:
 def test_resolve_config_without_path_uses_defaults() -> None:
     cfg = resolve_config(None)
     assert isinstance(cfg, AppConfig)
-    assert cfg.display.enable_overlay
+    assert cfg.web.port == 8080

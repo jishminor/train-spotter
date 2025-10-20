@@ -105,19 +105,6 @@ class VehicleTrackingSettings(BaseModel):
     )
 
 
-class DisplaySettings(BaseModel):
-    """Control the on-device visual output."""
-
-    model_config = ConfigDict(frozen=True)
-
-    enable_overlay: bool = True
-    sink_type: str = Field(
-        default="nveglglessink",
-        description="DeepStream sink element for HDMI output",
-    )
-    show_debug_info: bool = False
-
-
 class WebSettings(BaseModel):
     """Lightweight dashboard configuration."""
 
@@ -128,6 +115,22 @@ class WebSettings(BaseModel):
     enable_auth: bool = False
     mjpeg_framerate: int = Field(default=10, ge=1, le=60)
     max_clients: int = Field(default=5, ge=1)
+    mjpeg_port: int = Field(
+        default=8766,
+        ge=1,
+        le=65535,
+        description="Port for MJPEG-over-WebSocket fallback streaming",
+    )
+    signaling_listen_host: str = Field(
+        default="0.0.0.0",
+        description="Host/IP for the internal WebRTC signaling server",
+    )
+    signaling_port: int = Field(
+        default=8765,
+        ge=1,
+        le=65535,
+        description="Port for the internal WebRTC signaling server",
+    )
 
 
 class StorageSettings(BaseModel):
@@ -172,7 +175,6 @@ class AppConfig(BaseModel):
     )
     train_detection: TrainDetectionSettings
     vehicle_tracking: VehicleTrackingSettings
-    display: DisplaySettings = Field(default_factory=DisplaySettings)
     web: WebSettings = Field(default_factory=WebSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     deepstream: DeepStreamPaths = Field(default_factory=DeepStreamPaths)
@@ -237,7 +239,6 @@ __all__ = [
     "TrainZoneSpec",
     "TrainDetectionSettings",
     "VehicleTrackingSettings",
-    "DisplaySettings",
     "WebSettings",
     "StorageSettings",
     "DeepStreamPaths",

@@ -1,25 +1,36 @@
-"""Tests for web streaming helper."""
+"""Tests for WebRTC signaling helpers."""
 
 from __future__ import annotations
 
-import itertools
-
-from train_spotter.web import FrameBroadcaster
+from train_spotter.web.webrtc import WebRTCManager, WebRTCSession
 
 
-def test_frame_broadcaster_streams_latest_frame() -> None:
-    broadcaster = FrameBroadcaster()
-    frame = b"\x00" * 10
-    broadcaster.update_frame(frame)
+def test_webrtc_session_roundtrip_queue() -> None:
+    session = WebRTCSession("test-session")
+    offer = {"type": "offer", "sdp": "fake"}
+    session.enqueue_from_browser(offer)
+    drained = list(session.drain_browser_messages())
+    assert drained == [offer]
 
-    gen = broadcaster.mjpeg_stream(fps=1)
-    chunk = next(gen)
+    payload = {"type": "answer", "sdp": "ok"}
+    session.send_to_browser(payload)
+    message = session.next_outgoing(timeout=0.1)
+    assert message == payload
 
-    assert b"--frame" in chunk
-    assert b"Content-Type: image/jpeg" in chunk
-    assert b"Content-Length: 10" in chunk
-    broadcaster.close()
+    session.close("done")
+    assert session.is_closed()
+    closed_message = session.next_outgoing(timeout=0.1)
+    assert closed_message["type"] == "session-closed"
 
-    # Exhaust generator after close
-    remaining = b"".join(itertools.islice(gen, 1))
-    assert remaining == b""
+
+def test_manager_invokes_session_handler() -> None:
+    manager = WebRTCManager()
+    invoked: list[str] = []
+
+    manager.register_session_handler(lambda session: invoked.append(session.id))
+
+    session = manager.create_session()
+    assert invoked == [session.id]
+
+    session.close("cleanup")
+    manager.remove_session(session.id)

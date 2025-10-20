@@ -3,6 +3,19 @@
 {% block content %}
 <section class="live-view">
   <h2>Live Feed</h2>
-  <img class="live-stream" src="{{ url_for('video_feed') }}" alt="Live camera feed">
+  <video id="live-video" class="live-stream" autoplay playsinline muted></video>
+  <canvas id="live-canvas" class="live-stream" hidden></canvas>
+  <img id="live-image" class="live-stream" hidden alt="Live stream frame" />
+  <p id="stream-status" class="stream-status">Connecting to camera…</p>
 </section>
+<script>
+  window.TRAIN_SPOTTER = window.TRAIN_SPOTTER || {};
+  window.TRAIN_SPOTTER.signalingUrl = {{ signaling_url | tojson }};
+  window.TRAIN_SPOTTER.signalingHost = {{ signaling_host | tojson }};
+  window.TRAIN_SPOTTER.signalingPort = {{ signaling_port | tojson }};
+  window.TRAIN_SPOTTER.mjpegUrl = {{ mjpeg_url | tojson }};
+  window.TRAIN_SPOTTER.mjpegHost = {{ mjpeg_host | tojson }};
+  window.TRAIN_SPOTTER.mjpegPort = {{ mjpeg_port | tojson }};
+</script>
+<script src="{{ url_for('static', filename='viewer.js') }}?v={{ signaling_port }}" defer></script>
 {% endblock %}

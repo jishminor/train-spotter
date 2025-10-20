@@ -27,6 +27,11 @@ main {
   border: 4px solid #0f5c8c;
   border-radius: 6px;
 }
+.stream-status {
+  margin-top: 0.75rem;
+  font-size: 0.95rem;
+  color: #0f5c8c;
+}
 table {
   width: 100%;
   border-collapse: collapse;
