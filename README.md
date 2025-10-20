@@ -43,6 +43,33 @@ The code base is structured to run directly on the Jetson Xavier AGX and assumes
    python -m train_spotter.service.main --config path/to/config.json
    ```
 
+### Looping prerecorded video with v4l2loopback
+
+To drive the pipeline with the bundled traffic sample (or any MP4) while still
+exposing a `/dev/video*` device, create a v4l2 loopback sink and stream the
+video into it:
+
+1. Load the loopback module (requires sudo). Adjust `video_nr` if you prefer a
+   different device number (the sample config expects `/dev/video10`):
+   ```bash
+   sudo modprobe v4l2loopback video_nr=10 card_label=TrafficLoopback exclusive_caps=1
+   ```
+2. Start the feeder, which loops the clip forever. Match the `--device` and
+   optional format arguments to the loopback you created:
+   ```bash
+   python tools/v4l2_loopback_player.py train_spotter/tests/traffic.mp4 --device /dev/video10
+   ```
+   By default the script outputs 640x480 @ 30 fps in I420 (`yuv420p`). Use
+   `--pixel-format` or other flags if your pipeline expects something else.
+3. Point the application at the loopback device using the provided
+   `configs/traffic_video.json` (configured for `/dev/video10`, I420 input):
+   ```bash
+   python -m train_spotter.service.main --config configs/traffic_video.json
+   ```
+
+Stop the feeder with `Ctrl+C` when you are done. The loopback device persists
+until you unload the module (`sudo modprobe -r v4l2loopback`).
+
 ### Web dashboard only
 
 If you are testing against a prerecorded DeepStream pipeline or another video source, launch in dashboard-only mode:
