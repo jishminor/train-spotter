@@ -1,6 +1,6 @@
 {
   "camera_id": "traffic_video",
-  "camera_source": "file:///home/jishminor/code/train-spotter/train_spotter/tests/traffic.mp4",
+  "camera_source": "file:///home/jishminor/code/train-spotter/train_spotter/tests/out_640x480_30fps.mp4",
   "roi_config_path": "train_spotter/data/roi_config.json",
   "train_detection": {
     "zone": {
