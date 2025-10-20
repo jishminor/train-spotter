@@ -3,11 +3,12 @@
 {% block content %}
 <section class="live-view">
   <h2>Live Feed</h2>
-  <video id="live-video" class="live-stream" autoplay playsinline muted></video>
+  <video id="live-video" class="live-stream" autoplay="true" playsinline muted></video>
   <canvas id="live-canvas" class="live-stream" hidden></canvas>
   <img id="live-image" class="live-stream" hidden alt="Live stream frame" />
   <p id="stream-status" class="stream-status">Connecting to camera…</p>
 </section>
+<script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
 <script>
   window.TRAIN_SPOTTER = window.TRAIN_SPOTTER || {};
   window.TRAIN_SPOTTER.signalingUrl = {{ signaling_url | tojson }};

@@ -577,8 +577,11 @@ class DeepStreamPipeline:
 
         # --- Elements -------------------------------------------------------------
         queue = self._make_element("queue", f"webrtc-queue-{session.id}")
-        queue.set_property("leaky", 2)
-        queue.set_property("max-size-buffers", 1)
+        queue.set_property("leaky", 2)              # downstream
+        queue.set_property("max-size-buffers", 30)
+        queue.set_property("max-size-bytes", 0)
+        queue.set_property("max-size-time", 0)
+        queue.set_property("flush-on-eos", False)
 
         converter = self._make_element("nvvideoconvert", f"webrtc-converter-{session.id}")
 
@@ -587,11 +590,16 @@ class DeepStreamPipeline:
         caps_in.set_property("caps", Gst.Caps.from_string("video/x-raw(memory:NVMM),format=NV12"))
 
         encoder = self._make_element("nvv4l2h264enc", f"webrtc-encoder-{session.id}")
+        encoder.set_property("profile", 0)         # baseline
         encoder.set_property("control-rate", 1)          # 1 = CBR
         encoder.set_property("bitrate", 6_000_000)
-        encoder.set_property("iframeinterval", 15)       # keyframe every ~1s at 15 fps
+        encoder.set_property("iframeinterval", 30)       # ~2s GOP at 15 fps
         encoder.set_property("insert-sps-pps", True)
         encoder.set_property("preset-level", 1)
+        try:
+            encoder.set_property("idrinterval", 30)
+        except (TypeError, AttributeError):
+            pass
 
         parser = self._make_element("h264parse", f"webrtc-parse-{session.id}")
         parser.set_property("config-interval", -1)       # push SPS/PPS with every IDR
@@ -606,12 +614,71 @@ class DeepStreamPipeline:
         # (profile/level are negotiable; keep minimal strictness)
         h264_caps.set_property(
             "caps",
-            Gst.Caps.from_string("video/x-h264,stream-format=avc,alignment=au")
+            Gst.Caps.from_string("video/x-h264,stream-format=byte-stream,alignment=au")
         )
 
         payloader = self._make_element("rtph264pay", f"webrtc-pay-{session.id}")
         payloader.set_property("config-interval", 1)     # emit SPS/PPS regularly in RTP
         # Leave PT to negotiation; we set it later if we parse it from the offer
+
+        rtp_monitor = self._make_element("identity", f"webrtc-rtp-monitor-{session.id}")
+        rtp_monitor.set_property("silent", True)
+        try:
+            rtp_monitor.set_property("signal-handoffs", True)
+        except TypeError:
+            # Older GStreamer builds gate this property behind a feature flag; ignore if missing
+            pass
+        monitor_state = {"buffer_logged": False, "list_logged": False}
+
+        def _on_rtp_handoff(identity, buf, pad, session_id=session.id, state=monitor_state):
+            if state["buffer_logged"]:
+                return
+            size = buf.get_size() if buf else 0
+            pts = buf.pts if buf else Gst.CLOCK_TIME_NONE
+            LOGGER.info(
+                "WebRTC session %s identity handoff buffer size=%s pts=%s",
+                session.id,
+                size,
+                pts,
+            )
+            state["buffer_logged"] = True
+
+        def _on_rtp_handoff_list(identity, buf_list, pad, session_id=session.id, state=monitor_state):
+            if state["list_logged"]:
+                return
+            list_len = buf_list.length() if buf_list else 0
+            size = 0
+            pts = Gst.CLOCK_TIME_NONE
+            if buf_list and list_len:
+                try:
+                    size = buf_list.calculate_size()
+                except Exception:
+                    size = 0
+                first = buf_list.get(0)
+                if first is not None:
+                    pts = first.pts
+            LOGGER.info(
+                "WebRTC session %s identity handoff buffer-list[%s] size=%s pts=%s",
+                session.id,
+                list_len,
+                size,
+                pts,
+            )
+            state["list_logged"] = True
+
+        try:
+            rtp_monitor.connect("handoff", _on_rtp_handoff)
+            rtp_monitor.connect("handoff-list", _on_rtp_handoff_list)
+            # Some GStreamer 1.20 builds omit the handoff-list signature; guard it.
+            # if hasattr(rtp_monitor, "connect"):
+            #     try:
+            #         rtp_monitor.connect("handoff-list", _on_rtp_handoff_list)
+            #     except TypeError:
+            #         LOGGER.debug(
+            #             "WebRTC session %s identity handoff-list signal unavailable", session.id
+            #         )
+        except TypeError:
+            LOGGER.debug("WebRTC session %s identity handoff signals unavailable", session.id)
 
         webrtcbin = self._make_element("webrtcbin", f"webrtcbin-{session.id}")
         webrtcbin.set_property("bundle-policy", GstWebRTC.WebRTCBundlePolicy.MAX_BUNDLE)
@@ -623,7 +690,7 @@ class DeepStreamPipeline:
         webrtcbin.connect("notify::ice-gathering-state", self._on_ice_gathering_state_notify, session.id)
         webrtcbin.connect("notify::connection-state", self._on_connection_state_notify, session.id)
 
-        elements = [queue, converter, caps_in, encoder, parser, h264_caps, payloader, webrtcbin]
+        elements = [queue, converter, caps_in, encoder, parser, h264_caps, payloader, rtp_monitor, webrtcbin]
         for e in elements:
             self._pipeline.add(e)
 
@@ -634,12 +701,54 @@ class DeepStreamPipeline:
         try:
             # Upstream → encoder chain
             tee_pad = self._link_tee_to_queue(self._tee, queue)
+            queue_sink_pad = queue.get_static_pad("sink")
+            if queue_sink_pad:
+                def _queue_probe(pad, info, session_id=session.id, flag={"logged": False}):
+                    if not flag["logged"]:
+                        buf = info.get_buffer()
+                        LOGGER.info(
+                            "WebRTC session %s received frame at tee branch (size=%s pts=%s)",
+                            session.id,
+                            buf.get_size() if buf else 0,
+                            buf.pts if buf else Gst.CLOCK_TIME_NONE,
+                        )
+                        flag["logged"] = True
+                        pad.remove_probe(info.id)
+                    return Gst.PadProbeReturn.OK
+                queue_sink_pad.add_probe(Gst.PadProbeType.BUFFER, _queue_probe)
             if not queue.link(converter):
                 raise RuntimeError("Failed to link WebRTC queue → converter")
             if not converter.link(caps_in):
                 raise RuntimeError("Failed to link WebRTC converter → caps_in")
             if not caps_in.link(encoder):
                 raise RuntimeError("Failed to link WebRTC caps_in → encoder")
+
+            encoder_src_pad = encoder.get_static_pad("src")
+            if encoder_src_pad:
+                encoder_probe_state = {"logged": False, "id": None}
+
+                def _encoder_probe(pad, info, session_id=session.id, state=encoder_probe_state):
+                    if state["logged"]:
+                        return Gst.PadProbeReturn.OK
+                    buf = info.get_buffer()
+                    if buf is None:
+                        return Gst.PadProbeReturn.OK
+                    LOGGER.info(
+                        "WebRTC session %s encoder produced buffer size=%s pts=%s dts=%s",
+                        session.id,
+                        buf.get_size(),
+                        buf.pts,
+                        buf.dts,
+                    )
+                    state["logged"] = True
+                    if state["id"] is not None:
+                        pad.remove_probe(state["id"])
+                    return Gst.PadProbeReturn.OK
+
+                encoder_probe_state["id"] = encoder_src_pad.add_probe(
+                    Gst.PadProbeType.BUFFER,
+                    _encoder_probe,
+                )
             if not encoder.link(parser):
                 raise RuntimeError("Failed to link WebRTC encoder → parser")
             if not parser.link(h264_caps):
@@ -647,18 +756,113 @@ class DeepStreamPipeline:
             if not h264_caps.link(payloader):
                 raise RuntimeError("Failed to link WebRTC h264_caps → payloader")
 
+            payloader_sink_pad = payloader.get_static_pad("sink")
+            if payloader_sink_pad:
+                pay_probe_state = {"logged": False, "id": None}
+
+                def _payloader_probe(pad, info, session_id=session.id, state=pay_probe_state):
+                    if state["logged"]:
+                        return Gst.PadProbeReturn.OK
+
+                    buf = info.get_buffer()
+                    kind = "buffer"
+                    size = 0
+                    pts = Gst.CLOCK_TIME_NONE
+
+                    if buf is not None:
+                        size = buf.get_size()
+                        pts = buf.pts
+                    else:
+                        buf_list = info.get_buffer_list()
+                        if buf_list is not None:
+                            list_len = buf_list.length()
+                            kind = f"buffer-list[{list_len}]"
+                            try:
+                                size = buf_list.calculate_size()
+                            except Exception:
+                                size = 0
+                            first = buf_list.get(0) if list_len > 0 else None
+                            if first is not None:
+                                pts = first.pts
+
+                    LOGGER.info(
+                        "WebRTC session %s payloader sink received %s size=%s pts=%s",
+                        session.id,
+                        kind,
+                        size,
+                        pts,
+                    )
+                    state["logged"] = True
+                    if state["id"] is not None:
+                        pad.remove_probe(state["id"])
+                    return Gst.PadProbeReturn.OK
+
+                pay_probe_state["id"] = payloader_sink_pad.add_probe(
+                    Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST,
+                    _payloader_probe,
+                )
+            if not payloader.link(rtp_monitor):
+                raise RuntimeError("Failed to link WebRTC payloader → RTP monitor")
+
             # Payloader → webrtcbin: request a send sink pad; this implicitly creates a SENDONLY transceiver.
-            pay_src = payloader.get_static_pad("src")
-            if pay_src is None:
-                raise RuntimeError("Failed to obtain payloader src pad")
+            monitor_src = rtp_monitor.get_static_pad("src")
+            if monitor_src is None:
+                raise RuntimeError("Failed to obtain RTP monitor src pad")
+
+            probe_state = {"logged": False, "id": None}
+
+            def _probe(pad, info, session_id=session.id, state=probe_state):
+                if state["logged"]:
+                    return Gst.PadProbeReturn.OK
+
+                buf = info.get_buffer()
+                kind = "buffer"
+                size = 0
+                pts = Gst.CLOCK_TIME_NONE
+
+                if buf is not None:
+                    size = buf.get_size()
+                    pts = buf.pts
+                else:
+                    buf_list = info.get_buffer_list()
+                    if buf_list is not None:
+                        list_len = buf_list.length()
+                        kind = f"buffer-list[{list_len}]"
+                        try:
+                            size = buf_list.calculate_size()
+                        except Exception:
+                            size = 0
+                        first = buf_list.get(0) if list_len > 0 else None
+                        if first is not None:
+                            pts = first.pts
+
+                if buf is None and size == 0:
+                    return Gst.PadProbeReturn.OK
+
+                LOGGER.info(
+                    "WebRTC session %s outbound RTP %s size=%s pts=%s",
+                    session.id,
+                    kind,
+                    size,
+                    pts,
+                )
+                state["logged"] = True
+                if state["id"] is not None:
+                    pad.remove_probe(state["id"])
+                return Gst.PadProbeReturn.OK
+
+            probe_state["id"] = monitor_src.add_probe(
+                Gst.PadProbeType.BUFFER | Gst.PadProbeType.BUFFER_LIST,
+                _probe,
+            )
 
             webrtc_sink_pad = webrtcbin.get_request_pad("sink_%u")
             if webrtc_sink_pad is None:
                 raise RuntimeError("Failed to request sink pad on webrtcbin")
             request_pads.append((webrtcbin, webrtc_sink_pad))
 
-            if pay_src.link(webrtc_sink_pad) != Gst.PadLinkReturn.OK:
-                raise RuntimeError("Failed to link payloader → webrtcbin")
+            if monitor_src.link(webrtc_sink_pad) != Gst.PadLinkReturn.OK:
+                raise RuntimeError("Failed to link RTP monitor → webrtcbin")
 
         except Exception:
             # Rollback request pads and elements
@@ -695,12 +899,26 @@ class DeepStreamPipeline:
             if len(trs) == 0:
                 LOGGER.warning("WebRTC session %s: no transceiver created; check sink_%%u linking.", session.id)
             elif len(trs) > 1:
-                # This is the situation that leads to "Could not intersect offer direction..."
-                # We don’t force-remove here (API doesn’t expose that safely); log loudly so caller can fix upstream.
                 LOGGER.warning(
                     "WebRTC session %s: multiple transceivers detected (%d). "
-                    "Do NOT call add-transceiver() AND sink_%%u; client must offer a single recvonly m-line.",
+                    "Client offer should contain a single recvonly m-line.",
                     session.id, len(trs)
+                )
+            for idx, tr in enumerate(trs):
+                try:
+                    tr.set_direction(GstWebRTC.WebRTCRTPTransceiverDirection.SENDONLY)
+                except Exception:
+                    LOGGER.debug("WebRTC session %s transceiver[%d]: failed to set direction",
+                                 session.id, idx, exc_info=True)
+                try:
+                    direction = tr.props.direction
+                except Exception:
+                    direction = "unknown"
+                LOGGER.info(
+                    "WebRTC session %s transceiver[%d] direction=%s",
+                    session.id,
+                    idx,
+                    direction,
                 )
         except Exception:
             LOGGER.debug("WebRTC session %s: get-transceivers failed (older GStreamer?)", session.id, exc_info=True)
@@ -913,7 +1131,7 @@ class DeepStreamPipeline:
             if payloader:
                 try:
                     payloader.set_property("pt", int(h264_pt))
-                    LOGGER.debug(
+                    LOGGER.info(
                         "Configured payloader PT=%s for WebRTC session %s (from offer)",
                         h264_pt,
                         branch.session.id,
@@ -989,6 +1207,7 @@ class DeepStreamPipeline:
         branch.webrtcbin.emit("set-local-description", answer, Gst.Promise.new())
         sdp_text = answer.sdp.as_text()
         LOGGER.info("Sending SDP answer to session %s", session_id)
+        LOGGER.info("SDP answer for session %s:\n%s", session_id, sdp_text)
         branch.session.send_to_browser({"type": "answer", "sdp": sdp_text})
         try:
             branch.webrtcbin.emit("gather-candidates")
@@ -1092,12 +1311,18 @@ class DeepStreamPipeline:
                     else:
                         target_pad = sink
 
-                    target_pad.send_event(
+                    success = target_pad.send_event(
                         GstVideo.video_event_new_upstream_force_key_unit(
                             Gst.CLOCK_TIME_NONE,  # running-time (let GStreamer fill)
                             True,                 # all-headers
                             0                     # count
                         )
+                    )
+                    LOGGER.info(
+                        "WebRTC session %s requested upstream keyframe on %s (success=%s)",
+                        session_id,
+                        "peer-src" if target_pad is peer else "encoder-sink",
+                        success,
                     )
 
                     # belt & braces: ask again ~300ms later
@@ -1107,12 +1332,18 @@ class DeepStreamPipeline:
                             if s2:
                                 peer2 = s2.get_peer()
                                 pad = peer2 if (peer2 and peer2.get_direction() == Gst.PadDirection.SRC) else s2
-                                pad.send_event(
+                                ok = pad.send_event(
                                     GstVideo.video_event_new_upstream_force_key_unit(
                                         Gst.CLOCK_TIME_NONE,
                                         True,
                                         0,
                                     )
+                                )
+                                LOGGER.info(
+                                    "WebRTC session %s repeated keyframe request on %s (success=%s)",
+                                    session_id,
+                                    "peer-src" if pad is peer2 else "encoder-sink",
+                                    ok,
                                 )
                         return False
 
