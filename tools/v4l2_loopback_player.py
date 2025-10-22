@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Stream a video file into a v4l2loopback device for testing cameras."""
 from __future__ import annotations
 
