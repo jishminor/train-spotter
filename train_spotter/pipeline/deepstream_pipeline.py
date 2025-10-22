@@ -630,56 +630,6 @@ class DeepStreamPipeline:
             pass
         monitor_state = {"buffer_logged": False, "list_logged": False}
 
-        def _on_rtp_handoff(identity, buf, pad, session_id=session.id, state=monitor_state):
-            if state["buffer_logged"]:
-                return
-            size = buf.get_size() if buf else 0
-            pts = buf.pts if buf else Gst.CLOCK_TIME_NONE
-            LOGGER.info(
-                "WebRTC session %s identity handoff buffer size=%s pts=%s",
-                session.id,
-                size,
-                pts,
-            )
-            state["buffer_logged"] = True
-
-        def _on_rtp_handoff_list(identity, buf_list, pad, session_id=session.id, state=monitor_state):
-            if state["list_logged"]:
-                return
-            list_len = buf_list.length() if buf_list else 0
-            size = 0
-            pts = Gst.CLOCK_TIME_NONE
-            if buf_list and list_len:
-                try:
-                    size = buf_list.calculate_size()
-                except Exception:
-                    size = 0
-                first = buf_list.get(0)
-                if first is not None:
-                    pts = first.pts
-            LOGGER.info(
-                "WebRTC session %s identity handoff buffer-list[%s] size=%s pts=%s",
-                session.id,
-                list_len,
-                size,
-                pts,
-            )
-            state["list_logged"] = True
-
-        try:
-            rtp_monitor.connect("handoff", _on_rtp_handoff)
-            rtp_monitor.connect("handoff-list", _on_rtp_handoff_list)
-            # Some GStreamer 1.20 builds omit the handoff-list signature; guard it.
-            # if hasattr(rtp_monitor, "connect"):
-            #     try:
-            #         rtp_monitor.connect("handoff-list", _on_rtp_handoff_list)
-            #     except TypeError:
-            #         LOGGER.debug(
-            #             "WebRTC session %s identity handoff-list signal unavailable", session.id
-            #         )
-        except TypeError:
-            LOGGER.debug("WebRTC session %s identity handoff signals unavailable", session.id)
-
         webrtcbin = self._make_element("webrtcbin", f"webrtcbin-{session.id}")
         webrtcbin.set_property("bundle-policy", GstWebRTC.WebRTCBundlePolicy.MAX_BUNDLE)
         webrtcbin.set_property("stun-server", "stun://stun.l.google.com:19302")
@@ -891,37 +841,6 @@ class DeepStreamPipeline:
             e.sync_state_with_parent()
 
         assert tee_pad is not None
-
-        # --- Sanity: we should have exactly one transceiver (created by linking sink_%u)
-        try:
-            trs = webrtcbin.emit("get-transceivers") or []
-            LOGGER.info("WebRTC session %s: webrtcbin has %d transceiver(s)", session.id, len(trs))
-            if len(trs) == 0:
-                LOGGER.warning("WebRTC session %s: no transceiver created; check sink_%%u linking.", session.id)
-            elif len(trs) > 1:
-                LOGGER.warning(
-                    "WebRTC session %s: multiple transceivers detected (%d). "
-                    "Client offer should contain a single recvonly m-line.",
-                    session.id, len(trs)
-                )
-            for idx, tr in enumerate(trs):
-                try:
-                    tr.set_direction(GstWebRTC.WebRTCRTPTransceiverDirection.SENDONLY)
-                except Exception:
-                    LOGGER.debug("WebRTC session %s transceiver[%d]: failed to set direction",
-                                 session.id, idx, exc_info=True)
-                try:
-                    direction = tr.props.direction
-                except Exception:
-                    direction = "unknown"
-                LOGGER.info(
-                    "WebRTC session %s transceiver[%d] direction=%s",
-                    session.id,
-                    idx,
-                    direction,
-                )
-        except Exception:
-            LOGGER.debug("WebRTC session %s: get-transceivers failed (older GStreamer?)", session.id, exc_info=True)
 
         # --- Polling workaround (older GStreamer that sometimes misses notifies)
         def poll_ice_state(session_id: str, webrtcbin_elem: Gst.Element) -> bool:
