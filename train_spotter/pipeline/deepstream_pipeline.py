@@ -583,9 +583,13 @@ class DeepStreamPipeline:
         queue.set_property("max-size-time", 0)
         queue.set_property("flush-on-eos", False)
 
-        converter = self._make_element("nvvideoconvert", f"webrtc-converter-{session.id}")
+        # First converter: NVMM → CPU (I420) to force data extraction from GPU
+        converter1 = self._make_element("nvvideoconvert", f"webrtc-converter1-{session.id}")
+        caps_cpu = self._make_element("capsfilter", f"webrtc-caps-cpu-{session.id}")
+        caps_cpu.set_property("caps", Gst.Caps.from_string("video/x-raw,format=I420"))
 
-        # Ensure encoder gets NV12 in NVMM
+        # Second converter: CPU (I420) → NVMM (NV12) for encoder
+        converter2 = self._make_element("nvvideoconvert", f"webrtc-converter2-{session.id}")
         caps_in = self._make_element("capsfilter", f"webrtc-caps-{session.id}")
         caps_in.set_property("caps", Gst.Caps.from_string("video/x-raw(memory:NVMM),format=NV12"))
 
@@ -640,7 +644,7 @@ class DeepStreamPipeline:
         webrtcbin.connect("notify::ice-gathering-state", self._on_ice_gathering_state_notify, session.id)
         webrtcbin.connect("notify::connection-state", self._on_connection_state_notify, session.id)
 
-        elements = [queue, converter, caps_in, encoder, parser, h264_caps, payloader, rtp_monitor, webrtcbin]
+        elements = [queue, converter1, caps_cpu, converter2, caps_in, encoder, parser, h264_caps, payloader, rtp_monitor, webrtcbin]
         for e in elements:
             self._pipeline.add(e)
 
@@ -666,10 +670,14 @@ class DeepStreamPipeline:
                         pad.remove_probe(info.id)
                     return Gst.PadProbeReturn.OK
                 queue_sink_pad.add_probe(Gst.PadProbeType.BUFFER, _queue_probe)
-            if not queue.link(converter):
-                raise RuntimeError("Failed to link WebRTC queue → converter")
-            if not converter.link(caps_in):
-                raise RuntimeError("Failed to link WebRTC converter → caps_in")
+            if not queue.link(converter1):
+                raise RuntimeError("Failed to link WebRTC queue → converter1")
+            if not converter1.link(caps_cpu):
+                raise RuntimeError("Failed to link WebRTC converter1 → caps_cpu")
+            if not caps_cpu.link(converter2):
+                raise RuntimeError("Failed to link WebRTC caps_cpu → converter2")
+            if not converter2.link(caps_in):
+                raise RuntimeError("Failed to link WebRTC converter2 → caps_in")
             if not caps_in.link(encoder):
                 raise RuntimeError("Failed to link WebRTC caps_in → encoder")
 
