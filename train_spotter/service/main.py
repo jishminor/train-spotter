@@ -98,8 +98,8 @@ def configure_logging(level: str) -> None:
     )
 
 
-def run_web_server(app_config: AppConfig, db: DatabaseManager) -> threading.Thread:
-    app = create_app(app_config, db)
+def run_web_server(app_config: AppConfig, db: DatabaseManager, event_bus: EventBus) -> threading.Thread:
+    app = create_app(app_config, db, event_bus)
 
     def _serve() -> None:
         LOGGER.info(
@@ -159,7 +159,7 @@ def main() -> None:
 
     signaling_server.start()
     mjpeg_server.start()
-    web_thread = run_web_server(app_config, database)
+    web_thread = run_web_server(app_config, database, event_bus)
 
     try:
         from train_spotter.pipeline import DeepStreamPipeline

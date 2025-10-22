@@ -1,13 +1,70 @@
 {% extends "base.html" %}
 
+{% block title %}Live Feed - Train Spotter{% endblock %}
+
 {% block content %}
-<section class="live-view">
-  <h2>Live Feed</h2>
-  <video id="live-video" class="live-stream" autoplay="true" playsinline muted></video>
-  <canvas id="live-canvas" class="live-stream" hidden></canvas>
-  <img id="live-image" class="live-stream" hidden alt="Live stream frame" />
-  <p id="stream-status" class="stream-status">Connecting to camera…</p>
-</section>
+<div class="row">
+  <div class="col-12">
+    <div class="card shadow-sm mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-camera-video-fill"></i> Live Camera Feed</h5>
+        <span id="connection-badge" class="badge bg-secondary">
+          <i class="bi bi-circle-fill"></i> Initializing
+        </span>
+      </div>
+      <div class="card-body p-0">
+        <div class="live-stream-container">
+          <video id="live-video" class="live-stream" autoplay="true" playsinline muted></video>
+          <canvas id="live-canvas" class="live-stream" hidden></canvas>
+          <img id="live-image" class="live-stream" hidden alt="Live stream frame" />
+        </div>
+      </div>
+      <div class="card-footer">
+        <div class="d-flex justify-content-between align-items-center">
+          <p id="stream-status" class="stream-status mb-0 status-connecting">
+            <i class="bi bi-hourglass-split"></i> Connecting to camera…
+          </p>
+          <div>
+            <small class="text-muted" id="stream-mode">WebRTC</small>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4">
+  <div class="col-md-4">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body text-center">
+        <i class="bi bi-train-front stat-icon text-primary"></i>
+        <div class="stat-value" id="train-count">-</div>
+        <div class="stat-label text-muted">Trains Today</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body text-center">
+        <i class="bi bi-car-front stat-icon text-success"></i>
+        <div class="stat-value" id="vehicle-count">-</div>
+        <div class="stat-label text-muted">Vehicles Today</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-4">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body text-center">
+        <i class="bi bi-clock-history stat-icon text-info"></i>
+        <div class="stat-value" id="last-train">-</div>
+        <div class="stat-label text-muted">Last Train</div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
 <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
 <script>
   window.TRAIN_SPOTTER = window.TRAIN_SPOTTER || {};
@@ -18,5 +75,38 @@
   window.TRAIN_SPOTTER.mjpegHost = {{ mjpeg_host | tojson }};
   window.TRAIN_SPOTTER.mjpegPort = {{ mjpeg_port | tojson }};
 </script>
-<script src="{{ url_for('static', filename='viewer.js') }}?v={{ signaling_port }}" defer></script>
+<script src="{{ url_for('static', filename='viewer.js') }}?v={{ signaling_port }}"></script>
+<script>
+// Simple stats updater - non-blocking
+(function() {
+  function updateStats() {
+    fetch('/api/status', { signal: AbortSignal.timeout ? AbortSignal.timeout(3000) : undefined })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data) return;
+        const trainEl = document.getElementById('train-count');
+        const vehicleEl = document.getElementById('vehicle-count');
+        const lastTrainEl = document.getElementById('last-train');
+
+        if (trainEl) trainEl.textContent = data.train_count || 0;
+        if (vehicleEl) vehicleEl.textContent = data.vehicle_count || 0;
+        if (lastTrainEl) {
+          if (data.latest_train && data.latest_train.started_at) {
+            const mins = Math.floor((Date.now() - data.latest_train.started_at * 1000) / 60000);
+            lastTrainEl.textContent = mins < 60 ? mins + 'm ago' : Math.floor(mins/60) + 'h ago';
+          } else {
+            lastTrainEl.textContent = 'Never';
+          }
+        }
+      })
+      .catch(() => {}); // Silently fail
+  }
+
+  // Wait 5 seconds after page load, then poll every 15 seconds
+  setTimeout(() => {
+    updateStats();
+    setInterval(updateStats, 15000);
+  }, 5000);
+})();
+</script>
 {% endblock %}
