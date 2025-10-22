@@ -128,6 +128,54 @@ The application follows a layered architecture:
 - **GStreamer Plugins**: `gstreamer1.0-nice` required for WebRTC; `nvjpegenc` preferred for MJPEG
 - **Camera**: CSI camera accessible via `nvarguscamerasrc` or USB camera via v4l2src
 
+### Logitech C270 USB Webcam Configuration
+
+The project uses a Logitech C270 HD webcam for night-time road monitoring. This camera has specific quirks that require careful v4l2 configuration:
+
+**Hardware Characteristics:**
+- Device: `/dev/video0` (uvcvideo driver)
+- Resolution: 640x480 @ 15fps (YUYV 4:2:2)
+- Auto exposure works better than manual mode for low-light conditions
+
+**Critical Configuration Issues:**
+
+1. **Manual Exposure Mode Failure**: When `exposure_auto=1` (Manual Mode), the camera locks `gain` to 0, resulting in completely black images regardless of `exposure_absolute` value. This appears to be a firmware limitation of the C270.
+
+2. **Auto Mode with High Brightness Works Best**: The optimal configuration uses `exposure_auto=3` (Aperture Priority Mode) with increased `brightness` and `contrast` values to compensate for low-light conditions.
+
+3. **Exposure Adjustment Delay**: The camera requires 3-5 seconds to adjust exposure when first opened or when pointed at a dark scene. When capturing single frames with ffmpeg, you MUST use `-ss 00:00:03` to delay capture until exposure stabilizes.
+
+**Optimal Night-Time Settings:**
+
+```bash
+# Apply these settings before starting the pipeline
+v4l2-ctl -d /dev/video0 --set-ctrl=exposure_auto=3              # Aperture Priority (auto)
+v4l2-ctl -d /dev/video0 --set-ctrl=exposure_auto_priority=1     # Allow longer exposures
+v4l2-ctl -d /dev/video0 --set-ctrl=brightness=200               # Default: 128
+v4l2-ctl -d /dev/video0 --set-ctrl=contrast=64                  # Default: 32
+v4l2-ctl -d /dev/video0 --set-ctrl=white_balance_temperature_auto=1
+v4l2-ctl -d /dev/video0 --set-ctrl=backlight_compensation=1
+```
+
+**Testing Commands:**
+
+```bash
+# Optimize camera for night-time (run before starting pipeline)
+./optimize_webcam_night.sh
+
+# Capture test image with proper delay
+ffmpeg -f v4l2 -i /dev/video0 -ss 00:00:03 -frames:v 1 -y test.jpg
+
+# Verify current settings
+v4l2-ctl -d /dev/video0 --list-ctrls
+```
+
+**Important Notes:**
+- Settings persist until camera is unplugged or system reboots
+- GStreamer v4l2src also benefits from the 3-5 second warm-up period when first opening the device
+- The camera's auto gain/exposure algorithm performs better than manual settings for varying night-time lighting conditions
+- Attempting to set `gain` manually in any exposure mode will be ignored or reset to 0
+
 ### GStreamer 1.16 WebRTC Limitations
 
 The Jetson Xavier AGX runs GStreamer 1.16.3 (bundled with JetPack/DeepStream). This version has significant limitations with the `webrtcbin` element:
