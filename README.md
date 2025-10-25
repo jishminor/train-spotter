@@ -1,114 +1,87 @@
 # Train Spotter
 
-A Jetson Xavier AGX application that uses DeepStream to analyse a rail-and-road scene, detect trains and track vehicles, record events to persistent storage, and expose a lightweight web dashboard with live and historical views.
+Train Spotter runs on NVIDIA Jetson hardware and couples a DeepStream inference pipeline with a Flask dashboard that streams low-latency video over WebRTC (MediaMTX bridge) and records train / vehicle activity.
 
-## High-level Features
-- DeepStream-based video pipeline with CSI/USB camera support.
-- Train presence detection with duration logging.
-- Vehicle tracking and per-lane counts.
-- Web dashboard exposing low-latency WebRTC live view plus historical event summaries (with a dedicated signaling service).
-- SQLite-backed persistence for robust storage on performant embedded hardware.
-
-## Repository Structure
-```
-train_spotter/
-  pipeline/          # DeepStream pipeline assembly & analytics integration
-  storage/           # SQLite persistence, event bus utilities
-  web/               # Flask dashboard & streaming endpoints
-  service/           # Application orchestration and configuration glue
-  data/              # ROI definitions and static assets
-  configs/           # DeepStream nvinfer/tracker configuration templates
-  deployment/        # Systemd unit and deployment helpers
-  tools/             # Utility scripts (e.g. ROI calibration snapshot)
-```
-
-The code base is structured to run directly on the Jetson Xavier AGX and assumes NVIDIA's DeepStream SDK is already installed (including the `pyds` Python bindings).
-
-## Getting Started
-1. Ensure JetPack and DeepStream are installed and the camera is accessible (e.g. `nvarguscamerasrc`).
-2. Clone this repository onto the device.
-3. Create and activate a virtual environment using the pyenv-installed Python 3.11.4:
+## Quick Start
+1. **Install NVIDIA stack** – JetPack / L4T with DeepStream (including the `python3-pyds` bindings) must be present on the Jetson. Ensure your USB or CSI camera is accessible via GStreamer (`v4l2src` / `nvarguscamerasrc`). Install supporting GStreamer plugins if needed (`sudo apt install gstreamer1.0-nice gstreamer1.0-plugins-good`).
+2. **Clone & set up Python**
    ```bash
-   pyenv shell 3.11.4
-   python -m venv .venv
+   git clone <repo-url>
+   cd train-spotter
+   python3 -m venv .venv
    source .venv/bin/activate
    pip install --upgrade pip
    pip install -r requirements.txt
    ```
-4. Calibrate regions of interest using `tools/capture_snapshot.py` to grab a reference frame and update `train_spotter/data/roi_config.json`.
-5. Launch the application:
+3. **Start MediaMTX for WebRTC** – the repo vendors a build in `tools/mediamtx/`.
    ```bash
-   python -m train_spotter.service.main --config path/to/config.json
+   ./tools/start_mediamtx.sh
    ```
-
-### Looping prerecorded video with v4l2loopback
-
-To drive the pipeline with the bundled traffic sample (or any MP4) while still
-exposing a `/dev/video*` device, create a v4l2 loopback sink and stream the
-video into it:
-
-1. Load the loopback module (requires sudo). Adjust `video_nr` if you prefer a
-   different device number (the sample config expects `/dev/video10`):
+   The default config (`configs/mediamtx.yml`) listens on:
+   - RTSP ingest: `rtsp://127.0.0.1:8554/trainspotter`
+   - WebRTC WHEP endpoint: `http://<device>:8889/trainspotter/whep`
+   - API / metrics: `http://<device>:9997`
+4. **Launch Train Spotter** – the primary configuration we ship targets a USB camera.
    ```bash
-   sudo modprobe v4l2loopback video_nr=10 card_label=TrafficLoopback exclusive_caps=1
+   python -m train_spotter.service.main --config configs/usb_camera.json
    ```
-2. Start the feeder, which loops the clip forever. Match the `--device` and
-   optional format arguments to the loopback you created:
-   ```bash
-   python tools/v4l2_loopback_player.py train_spotter/tests/traffic.mp4 --device /dev/video10
-   ```
-   By default the script outputs 640x480 @ 30 fps in I420 (`yuv420p`). Use
-   `--pixel-format` or other flags if your pipeline expects something else.
-3. Point the application at the loopback device using the provided
-   `configs/traffic_video.json` (configured for `/dev/video10`, I420 input):
-   ```bash
-   python -m train_spotter.service.main --config configs/traffic_video.json
-   ```
+   Optional flags:
+   - `--web-only` – skip DeepStream, only run the dashboard (attach to an external stream).
+   - `--passthrough` – stream raw camera frames without inference.
+   - `--gst-debug=3` – raise GStreamer log verbosity while debugging.
+5. **Open the dashboard** – visit `http://<device>:8080` from a desktop or mobile browser. The footer shows WebRTC status, transport mode, and the measured playback FPS (falls back to MJPEG if WebRTC fails).
 
-Stop the feeder with `Ctrl+C` when you are done. The loopback device persists
-until you unload the module (`sudo modprobe -r v4l2loopback`).
+## Requirements
+- NVIDIA Jetson Xavier AGX (other Jetsons will work with matching DeepStream binaries).
+- JetPack 5.x with DeepStream 6.x and `python3-pyds` installed.
+- GStreamer plugins: `gstreamer1.0-nice`, `gstreamer1.0-plugins-good`, `gstreamer1.0-plugins-bad`.
+- MediaMTX (bundled under `tools/mediamtx/` – replace with your build if needed).
+- Python 3.10+ with the packages listed in `requirements.txt`.
+- SQLite (for event storage – included with standard Python).
 
-### Web dashboard only
+## Configuration Files
+Configuration lives under `configs/`:
 
-If you are testing against a prerecorded DeepStream pipeline or another video source, launch in dashboard-only mode:
+- `usb_camera.json` – USB camera via `v4l2src` (default quick-start).
+- `traffic_video.json` – example setup for a v4l2loopback device fed by prerecorded footage.
+- `mediamtx.yml` – MediaMTX bridge settings. Update `webrtcAllowOrigin`, `webrtcICEServers2`, or `webrtcICEHostNAT1To1IPs` if you expose the Jetson over different networks/NATs.
+- `trafficcamnet_yolo11.txt` and `iou_tracker_config.txt` – DeepStream nvinfer and tracker templates.
 
+Update camera pipelines, ROI polygons, and storage paths as needed. ROI definitions live in `train_spotter/data/roi_config.json` and can be regenerated with `tools/capture_snapshot.py` + manual editing.
+
+## Web Dashboard & Streaming
+- Web server defaults to `0.0.0.0:8080`. Change via `web.host` / `web.port` in your JSON config.
+- WebRTC playback negotiates through MediaMTX. ICE servers are empty by default, so add STUN/TURN entries when clients are off-device (mobile LTE, remote Wi-Fi, etc.).
+- If WebRTC negotiation fails, the UI automatically switches to the MJPEG websocket fallback. The stream card badge shows mode and measured FPS.
+- The signaling websocket runs on `ws://<device>:8765` (configurable via `web.signaling_port`). Ensure firewall rules permit access.
+
+## Operating the Pipeline
+1. Verify the camera feed with GStreamer (`gst-launch-1.0 <pipeline> ! fakesink`).
+2. Start MediaMTX (`./tools/start_mediamtx.sh`).
+3. Run `python -m train_spotter.service.main --config configs/usb_camera.json`.
+4. Watch logs for `UDP/MPEG-TS output branch initialised` (pipeline side) and `ready to serve` (MediaMTX).
+5. Browse the dashboard. The sidebar shows train/vehicle counts; the live card shows connection status, transport, and FPS.
+
+To stop, press `Ctrl+C` in the Train Spotter terminal. MediaMTX continues until you terminate it.
+
+## Utility Scripts
+- `tools/capture_snapshot.py` – capture a still for ROI tuning (`python tools/capture_snapshot.py snapshots/site.png`).
+- `tools/v4l2_loopback_player.py` – loop an MP4 into a synthetic `/dev/video*` (pair with `traffic_video.json`).
+- `tools/start_mediamtx.sh` – launch the bundled MediaMTX build.
+- `test_webrtc_connection.py` – quick sanity check for the signaling server.
+
+## Testing
+Activate the virtual environment and run:
 ```bash
-python -m train_spotter.service.main --web-only
-```
-
-The default dashboard listens on `0.0.0.0:8080`. Adjust the host/port within the configuration file if required. WebRTC signaling now comes from a standalone server (default `ws://<device>:8765`), so make sure that port is reachable from your LAN client devices.
-
-WebRTC output requires the GStreamer libnice plugin. Install it on the Jetson with:
-
-```bash
-sudo apt install gstreamer1.0-nice
-```
-
-Without libnice the dashboard will report that streaming is unavailable.
-
-### Running tests
-
-Install dev dependencies (after activating the `pyenv` virtualenv) and invoke pytest via the selected interpreter:
-
-```bash
-pip install -r requirements.txt
 python -m pytest
 ```
+Some tests expect DeepStream-specific modules; skip them on development machines without Jetson tooling.
 
-Some optional tests rely on NVIDIA's TensorRT and PyCUDA packages. If those
-dependencies are unavailable on your development machine, run targeted suites
-(`python -m pytest train_spotter/tests`) or install the vendor SDK on the
-Jetson device before executing the full test run.
+## Troubleshooting
+- **Mobile browsers fall back to MJPEG** – add reachable ICE servers in `configs/mediamtx.yml`, expose the Jetson via HTTPS (Safari requires secure origins), and ensure the encoder profile is compatible (set `nvv4l2h264enc` to Baseline if needed).
+- **No WebRTC video** – confirm MediaMTX is running, `gstreamer1.0-nice` is installed, and the RTSP stream is ingesting (`mediamtx` logs show track status).
+- **ROI or detection drift** – re-capture reference frames and adjust polygons in `roi_config.json`.
 
-## Deployment Aids
-- `configs/trafficcamnet_yolo11.txt` – base nvinfer configuration targeting the bundled TrafficCamNet model. Adjust paths if your DeepStream installation differs.
-- `configs/iou_tracker_config.txt` – IOU tracker defaults suitable for roadway scenes.
-- `tools/capture_snapshot.py` – capture a camera still for ROI calibration (`python tools/capture_snapshot.py snapshots/site.png`).
-- `deployment/train-spotter.service` – example systemd unit (update user, working directory, and config paths before enabling).
+## Deployment
+A sample systemd unit lives under `deployment/train-spotter.service`. Update paths/users, enable with `sudo systemctl enable --now train-spotter`. Consider supervising MediaMTX with its own unit.
 
-## Next Steps
-- Refine ROI coordinates and thresholds for your specific installation.
-- Harden DeepStream configuration for production (INT8 calibration, batching, etc.).
-- Add alerting or metrics export if train detection feeds downstream systems.
-
-Additional documentation will be added as components are implemented.
