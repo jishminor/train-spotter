@@ -1,0 +1,83 @@
+# MediaMTX Configuration for Train Spotter
+# Optimized for RTSP → WebRTC conversion
+
+###############################################
+# Global settings
+###############################################
+
+# Log level: error, warn, info, debug
+logLevel: info
+logDestinations: [stdout]
+
+# Network timeouts
+readTimeout: 10s
+writeTimeout: 10s
+writeQueueSize: 1024
+
+###############################################
+# API Server (for monitoring)
+###############################################
+
+# HTTP API server for status and metrics
+api: yes
+apiAddress: :9997
+
+###############################################
+# RTSP Server (receives from GStreamer pipeline)
+###############################################
+
+# Enable RTSP server to receive stream from DeepStream
+rtspDisable: no
+protocols: [tcp]
+encryption: "no"
+rtspAddress: :8554
+
+# TCP transport only for reliability with localhost
+rtpAddress: :8000
+rtcpAddress: :8001
+
+###############################################
+# WebRTC Server (serves to browsers)
+###############################################
+
+# Enable WebRTC for browser streaming
+webrtcDisable: no
+webrtcAddress: :8889
+webrtcServerKey: server.key
+webrtcServerCert: server.crt
+webrtcAllowOrigin: '*'
+
+# Use localhost for ICE candidate (since it's local streaming)
+webrtcICEServers2: []
+
+###############################################
+# Disable unused protocols
+###############################################
+
+# We only need RTSP input and WebRTC output
+rtmpDisable: yes
+hlsDisable: yes
+
+###############################################
+# Path-specific settings
+###############################################
+
+paths:
+  # Main train spotter stream via UDP/MPEG-TS
+  trainspotter:
+    # Source: UDP MPEG-TS stream from GStreamer
+    # GStreamer will send to udp://127.0.0.1:5600
+    source: udp+mpegts://127.0.0.1:5600
+
+    # Enable recording (optional - comment out if not needed)
+    # record: yes
+    # recordPath: /home/jishminor/code/train-spotter/recordings/%Y-%m-%d_%H-%M-%S.mp4
+    # recordFormat: mp4
+    # recordPartDuration: 1h
+    # recordSegmentDuration: 10m
+    # recordDeleteAfter: 24h
+
+    # Allow anyone to read (localhost only recommended)
+    readUser:
+    readPass:
+    readIPs: []

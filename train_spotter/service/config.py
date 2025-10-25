@@ -131,6 +131,20 @@ class WebSettings(BaseModel):
         le=65535,
         description="Port for the internal WebRTC signaling server",
     )
+    enable_rtsp_output: bool = Field(
+        default=True,
+        description="Enable RTSP output stream for MediaMTX bridge",
+    )
+    rtsp_location: str = Field(
+        default="rtsp://localhost:8554/trainspotter",
+        description="RTSP server location to publish stream",
+    )
+    mediamtx_webrtc_port: int = Field(
+        default=8889,
+        ge=1,
+        le=65535,
+        description="Port for MediaMTX WebRTC server (WHEP endpoint)",
+    )
 
 
 class StorageSettings(BaseModel):

@@ -19,10 +19,8 @@ from train_spotter.storage import (
     TrainEvent,
     VehicleEvent,
 )
-from train_spotter.pipeline.signaling_server import WebRTCSignalingServer
 from train_spotter.web import create_app
 from train_spotter.web.mjpeg import MJPEGStreamServer
-from train_spotter.web.webrtc import WebRTCManager
 from train_spotter.service.roi import ROIConfig, load_roi_config
 
 if TYPE_CHECKING:
@@ -143,12 +141,6 @@ def main() -> None:
         app_config.storage.database_path,
         ensure_fsync=app_config.storage.ensure_fsync,
     )
-    webrtc_manager = WebRTCManager()
-    signaling_server = WebRTCSignalingServer(
-        app_config.web.signaling_listen_host,
-        app_config.web.signaling_port,
-        webrtc_manager,
-    )
     mjpeg_server = MJPEGStreamServer(
         app_config.web.signaling_listen_host,
         app_config.web.mjpeg_port,
@@ -157,7 +149,6 @@ def main() -> None:
     )
     event_processor = EventProcessor(event_bus, database)
 
-    signaling_server.start()
     mjpeg_server.start()
     web_thread = run_web_server(app_config, database, event_bus)
 
@@ -175,7 +166,6 @@ def main() -> None:
             app_config,
             event_bus,
             roi_config=roi_config,
-            webrtc_manager=webrtc_manager,
             mjpeg_server=mjpeg_server,
             enable_inference=not args.passthrough,
         )
@@ -196,8 +186,6 @@ def main() -> None:
         LOGGER.info("Shutdown requested")
     finally:
         event_processor.stop()
-        signaling_server.stop()
-        webrtc_manager.close_all("shutdown")
         mjpeg_server.stop()
         if pipeline is not None:
             pipeline.stop()

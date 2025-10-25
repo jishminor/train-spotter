@@ -77,25 +77,28 @@ def create_app(
 
     @app.route("/")
     def index():
-        signaling_host = _resolve_signaling_host(app_config.web.signaling_listen_host, request.host)
-        ws_scheme = "wss" if request.scheme == "https" else "ws"
-        signaling_url = (
-            f"{ws_scheme}://{signaling_host}:{app_config.web.signaling_port}"
-            if signaling_host
+        # MediaMTX WebRTC URL (WHEP endpoint)
+        mediamtx_host = _resolve_signaling_host(app_config.web.signaling_listen_host, request.host)
+        http_scheme = request.scheme  # "http" or "https"
+        mediamtx_url = (
+            f"{http_scheme}://{mediamtx_host}:{app_config.web.mediamtx_webrtc_port}/trainspotter/whep"
+            if mediamtx_host
             else None
         )
+
+        # MJPEG fallback URL
         mjpeg_host = _resolve_signaling_host(app_config.web.signaling_listen_host, request.host)
+        ws_scheme = "wss" if request.scheme == "https" else "ws"
         mjpeg_url = (
             f"{ws_scheme}://{mjpeg_host}:{app_config.web.mjpeg_port}/mjpeg"
             if mjpeg_host
             else None
         )
+
         return render_template(
             "index.html",
             web_config=app_config.web,
-            signaling_url=signaling_url,
-            signaling_host=signaling_host,
-            signaling_port=app_config.web.signaling_port,
+            mediamtx_url=mediamtx_url,
             mjpeg_url=mjpeg_url,
             mjpeg_host=mjpeg_host,
             mjpeg_port=app_config.web.mjpeg_port,

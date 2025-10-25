@@ -68,14 +68,12 @@
 <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
 <script>
   window.TRAIN_SPOTTER = window.TRAIN_SPOTTER || {};
-  window.TRAIN_SPOTTER.signalingUrl = {{ signaling_url | tojson }};
-  window.TRAIN_SPOTTER.signalingHost = {{ signaling_host | tojson }};
-  window.TRAIN_SPOTTER.signalingPort = {{ signaling_port | tojson }};
+  window.TRAIN_SPOTTER.mediamtxUrl = {{ mediamtx_url | tojson }};
   window.TRAIN_SPOTTER.mjpegUrl = {{ mjpeg_url | tojson }};
   window.TRAIN_SPOTTER.mjpegHost = {{ mjpeg_host | tojson }};
   window.TRAIN_SPOTTER.mjpegPort = {{ mjpeg_port | tojson }};
 </script>
-<script src="{{ url_for('static', filename='viewer.js') }}?v={{ signaling_port }}"></script>
+<script src="{{ url_for('static', filename='viewer-mediamtx.js') }}"></script>
 <script>
 // Simple stats updater - non-blocking
 (function() {
