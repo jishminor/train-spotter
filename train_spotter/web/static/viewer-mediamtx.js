@@ -8,6 +8,7 @@
   const canvasCtx = canvasEl ? canvasEl.getContext("2d") : null;
   const imageEl = document.getElementById("live-image");
   const statusEl = document.getElementById("stream-status");
+  const fpsEl = document.getElementById("stream-fps");
 
   if (!statusEl) {
     return;
@@ -15,6 +16,102 @@
 
   const setStatus = (text) => {
     statusEl.textContent = text;
+  };
+
+  const updateFpsDisplay = (text) => {
+    if (fpsEl) {
+      fpsEl.textContent = text;
+    }
+  };
+
+  updateFpsDisplay("FPS: --");
+
+  let pc = null;
+  let webrtcStatsTimer = null;
+  let lastInboundVideoStats = null;
+  let lastRenderedFrames = null;
+  let lastRenderedSampleTime = null;
+
+  const stopWebRtcStats = () => {
+    if (webrtcStatsTimer) {
+      clearInterval(webrtcStatsTimer);
+      webrtcStatsTimer = null;
+    }
+    lastInboundVideoStats = null;
+    lastRenderedFrames = null;
+    lastRenderedSampleTime = null;
+    updateFpsDisplay("FPS: --");
+  };
+
+  const pollWebRtcStats = async () => {
+    if (!pc || typeof pc.getStats !== "function") {
+      return;
+    }
+
+    try {
+      const stats = await pc.getStats();
+      let measuredFps = null;
+
+      stats.forEach((report) => {
+        if (report.type === "inbound-rtp" && report.kind === "video") {
+          if (typeof report.framesPerSecond === "number") {
+            measuredFps = report.framesPerSecond;
+          } else if (typeof report.framesDecoded === "number" && typeof report.timestamp === "number") {
+            if (lastInboundVideoStats) {
+              const frameDelta = report.framesDecoded - lastInboundVideoStats.framesDecoded;
+              const timeDelta = (report.timestamp - lastInboundVideoStats.timestamp) / 1000;
+              if (timeDelta > 0) {
+                measuredFps = frameDelta / timeDelta;
+              }
+            }
+            lastInboundVideoStats = {
+              framesDecoded: report.framesDecoded,
+              timestamp: report.timestamp,
+            };
+          }
+        } else if (report.type === "track" && report.kind === "video" && typeof report.framesPerSecond === "number") {
+          measuredFps = report.framesPerSecond;
+        }
+      });
+
+      if ((measuredFps === null || !Number.isFinite(measuredFps)) && videoEl && typeof videoEl.getVideoPlaybackQuality === "function") {
+        const quality = videoEl.getVideoPlaybackQuality();
+        const now = performance.now();
+
+        if (lastRenderedFrames !== null && lastRenderedSampleTime !== null) {
+          const frameDelta = quality.totalVideoFrames - lastRenderedFrames;
+          const timeDelta = (now - lastRenderedSampleTime) / 1000;
+          if (timeDelta > 0) {
+            const estimated = frameDelta / timeDelta;
+            if (Number.isFinite(estimated) && estimated >= 0) {
+              measuredFps = estimated;
+            }
+          }
+        }
+
+        lastRenderedFrames = quality.totalVideoFrames;
+        lastRenderedSampleTime = now;
+      }
+
+      if (measuredFps !== null && Number.isFinite(measuredFps)) {
+        updateFpsDisplay(`FPS: ${measuredFps.toFixed(1)}`);
+      } else {
+        updateFpsDisplay("FPS: --");
+      }
+    } catch (err) {
+      console.debug("WebRTC stats polling failed", err);
+    }
+  };
+
+  const startWebRtcStats = () => {
+    if (!pc || typeof pc.getStats !== "function") {
+      updateFpsDisplay("FPS: --");
+      return;
+    }
+
+    stopWebRtcStats();
+    pollWebRtcStats();
+    webrtcStatsTimer = window.setInterval(pollWebRtcStats, 1000);
   };
 
   const showVideo = () => {
@@ -102,7 +199,6 @@
   };
 
   // ---- MediaMTX WHEP Client ----
-  let pc = null;
   let restartTimeout = null;
   let sessionUrl = null;
   let queuedCandidates = [];
@@ -183,6 +279,8 @@
   const connect = async () => {
     if (fallbackActive) return;
 
+    stopWebRtcStats();
+
     setStatus("Connecting to MediaMTX...");
     console.log("MediaMTX: Connecting to", mediamtxUrl);
 
@@ -204,6 +302,7 @@
         });
         showVideo();
         setStatus("Streaming");
+        startWebRtcStats();
         retryCount = 0;
       }
     };
@@ -317,6 +416,8 @@
       });
       sessionUrl = null;
     }
+
+    stopWebRtcStats();
 
     if (pc !== null) {
       pc.close();
@@ -437,6 +538,8 @@
       pc = null;
     }
 
+    stopWebRtcStats();
+
     showFallbackSurface();
     if (videoEl) {
       try {
@@ -449,6 +552,7 @@
   // ---- Cleanup ----
   window.addEventListener("beforeunload", () => {
     stopMjpegStream();
+    stopWebRtcStats();
     if (sessionUrl !== null) {
       fetch(sessionUrl, {
         method: 'DELETE',
