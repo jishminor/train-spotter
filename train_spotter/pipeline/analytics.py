@@ -19,9 +19,6 @@ try:  # pragma: no cover - gi is unavailable in unit tests
 except (ImportError, ValueError):  # pragma: no cover - DeepStream runtime required
     Gst = None  # type: ignore
 
-if TYPE_CHECKING:
-    from train_spotter.ui.display import OverlayController
-
 try:
     import pyds  # type: ignore
 except ImportError as exc:  # pragma: no cover - DeepStream runtime required at runtime
@@ -206,14 +203,12 @@ class StreamAnalytics:
         self,
         app_config: AppConfig,
         event_bus: EventBus,
-        overlay_controller: "OverlayController" | None = None,
         roi_config: ROIConfig | None = None,
     ) -> None:
         if pyds is None:
             LOGGER.warning("pyds is not available; analytics will be inert")
         self._config = app_config
         self._event_bus = event_bus
-        self._overlay = overlay_controller
         self._roi_config = roi_config
         self._train_polygon = self._determine_train_polygon(roi_config)
         self._train_polygon_area = polygon_area(self._train_polygon) if self._train_polygon else 0.0
@@ -239,8 +234,6 @@ class StreamAnalytics:
                     self._vehicle_hooks.handle_detection(det, timestamp)
             # At end of frame, finalise stale tracks
             self._vehicle_hooks.finalise_tracks(timestamp)
-            if self._overlay is not None:
-                self._overlay.apply_to_frame(frame_meta, batch_meta)
             l_frame = l_frame.next
 
     def _cast_frame_meta(self, data):

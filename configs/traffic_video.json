@@ -1,7 +1,6 @@
 {
   "camera_id": "traffic_video",
   "camera_source": "v4l2src device=/dev/video10 io-mode=0 ! video/x-raw,format=I420,width=640,height=480,framerate=30/1 ! nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! queue",
-  "roi_config_path": "train_spotter/data/roi_config.json",
   "train_detection": {
     "zone": {
       "polygon": {
@@ -19,9 +18,5 @@
     "lanes": [],
     "infer_primary_config_path": "configs/trafficcamnet_yolo11.txt",
     "tracker_config_path": "configs/iou_tracker_config.txt"
-  },
-  "display": {
-    "sink_type": "fakesink",
-    "enable_overlay": false
   }
 }

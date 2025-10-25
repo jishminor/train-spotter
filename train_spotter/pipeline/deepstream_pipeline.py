@@ -7,23 +7,43 @@ import logging
 import shlex
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Dict, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import unquote, urlparse
 
 import gi
 
 gi.require_version("Gst", "1.0")
 gi.require_version("GObject", "2.0")
+gi.require_version("GstVideo", "1.0")
 
-from gi.repository import GLib, GObject, Gst  # type: ignore
+from gi.repository import GLib, GObject, Gst, GstVideo  # type: ignore
 
 from train_spotter.pipeline.analytics import StreamAnalytics, analytics_pad_probe
 from train_spotter.service.config import AppConfig
 from train_spotter.service.roi import ROIConfig
 from train_spotter.storage import EventBus, EventMessage, EventType
 
+if TYPE_CHECKING:
+    from train_spotter.web.mjpeg import MJPEGStreamServer
+
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class _MjpegBranch:
+    tee_pad: Gst.Pad
+    elements: list[Gst.Element]
+    appsink: Gst.Element
+    signal_id: Optional[int]
+
+
+@dataclass
+class _RtspBranch:
+    tee_pad: Gst.Pad
+    elements: list[Gst.Element]
+    rtsp_sink: Gst.Element
 
 
 class DeepStreamPipeline:
@@ -33,9 +53,8 @@ class DeepStreamPipeline:
         self,
         config: AppConfig,
         event_bus: EventBus,
-        overlay_controller=None,
         roi_config: ROIConfig | None = None,
-        frame_callback: Optional[Callable[[bytes], None]] = None,
+        mjpeg_server: "MJPEGStreamServer | None" = None,
         enable_inference: bool = True,
     ) -> None:
         self._config = config
@@ -46,17 +65,19 @@ class DeepStreamPipeline:
         self._thread: Optional[threading.Thread] = None
         self._enable_inference = enable_inference
         self._analytics = (
-            StreamAnalytics(config, event_bus, overlay_controller, roi_config)
+            StreamAnalytics(config, event_bus, roi_config)
             if enable_inference
             else None
         )
-        self._frame_callback = frame_callback
         self._tee_src_pads: list[Gst.Pad] = []
-        self._appsink: Optional[Gst.Element] = None
-        self._appsink_handler: Optional[int] = None
         self._source_is_live: bool = True
         self._stop_event = threading.Event()
+        self._tee: Optional[Gst.Element] = None
         Gst.init(None)
+        self._mjpeg_server = mjpeg_server
+        self._mjpeg_branch: Optional[_MjpegBranch] = None
+        self._mjpeg_logged_first_frame = False
+        self._rtsp_branch: Optional[_RtspBranch] = None
 
     def build(self) -> None:
         LOGGER.info("Building DeepStream pipeline")
@@ -89,25 +110,13 @@ class DeepStreamPipeline:
         nvvidconv = self._make_element("nvvideoconvert", "video-converter")
         nvosd = self._make_element("nvdsosd", "on-screen-display")
 
-        tee = self._make_element("tee", "display-tee")
-        queue_display = self._make_element("queue", "display-queue")
-        queue_display.set_property("leaky", 2)
-        queue_display.set_property("max-size-buffers", 4)
-        sink = self._make_element(self._config.display.sink_type, "display-sink")
+        tee = self._make_element("tee", "output-tee")
+        queue_sink = self._make_element("queue", "sink-queue")
+        queue_sink.set_property("leaky", 2)
+        queue_sink.set_property("max-size-buffers", 4)
+        sink = self._make_element("fakesink", "null-sink")
         sink.set_property("sync", False)
-
-        queue_web = self._make_element("queue", "web-queue")
-        queue_web.set_property("leaky", 2)
-        queue_web.set_property("max-size-buffers", 2)
-        nvjpegenc = self._make_element("nvjpegenc", "jpeg-encoder")
-        nvjpegenc.set_property("quality", 70)
-        appsink = self._make_element("appsink", "web-appsink")
-        appsink.set_property("emit-signals", True)
-        appsink.set_property("sync", False)
-        appsink.set_property("max-buffers", 1)
-        appsink.set_property("drop", True)
-        self._appsink_handler = appsink.connect("new-sample", self._on_new_sample)
-        self._appsink = appsink
+        sink.set_property("async", False)
 
         elements = [streammux]
         if primary_infer is not None:
@@ -119,11 +128,8 @@ class DeepStreamPipeline:
                 nvvidconv,
                 nvosd,
                 tee,
-                queue_display,
+                queue_sink,
                 sink,
-                queue_web,
-                nvjpegenc,
-                appsink,
             ]
         )
 
@@ -147,14 +153,10 @@ class DeepStreamPipeline:
             raise RuntimeError("Failed to link nvvidconv to nvosd")
         if not nvosd.link(tee):
             raise RuntimeError("Failed to link nvosd to tee")
-        self._link_tee_to_queue(tee, queue_display)
-        if not queue_display.link(sink):
-            raise RuntimeError("Failed to link display queue to sink")
-        self._link_tee_to_queue(tee, queue_web)
-        if not queue_web.link(nvjpegenc):
-            raise RuntimeError("Failed to link web queue to nvjpegenc")
-        if not nvjpegenc.link(appsink):
-            raise RuntimeError("Failed to link nvjpegenc to appsink")
+        self._link_tee_to_queue(tee, queue_sink)
+        if not queue_sink.link(sink):
+            raise RuntimeError("Failed to link sink queue to fakesink")
+        self._tee = tee
 
         if self._enable_inference and self._analytics is not None:
             tracker_src_pad = tracker.get_static_pad("src") if tracker is not None else None
@@ -166,6 +168,8 @@ class DeepStreamPipeline:
                 LOGGER.warning("Failed to attach analytics probe; tracker src pad missing")
 
         self._log_pipeline_layout()
+        self._ensure_mjpeg_branch()
+        self._ensure_rtsp_branch()
 
     def start(self) -> None:
         if self._pipeline is None:
@@ -199,6 +203,8 @@ class DeepStreamPipeline:
             self._stop_event.set()
             return
         LOGGER.info("Stopping DeepStream pipeline")
+        self._teardown_mjpeg_branch()
+        self._teardown_rtsp_branch()
 
         pipeline = self._pipeline
 
@@ -490,7 +496,7 @@ class DeepStreamPipeline:
         if srcpad.link(sinkpad) != Gst.PadLinkReturn.OK:
             raise RuntimeError("Failed to link source bin to streammux")
 
-    def _link_tee_to_queue(self, tee, queue):
+    def _link_tee_to_queue(self, tee, queue) -> Gst.Pad:
         srcpad = tee.get_request_pad("src_%u")
         if not srcpad:
             raise RuntimeError("Failed to request src pad from tee")
@@ -500,30 +506,660 @@ class DeepStreamPipeline:
         if srcpad.link(sinkpad) != Gst.PadLinkReturn.OK:
             raise RuntimeError("Failed to link tee to queue")
         self._tee_src_pads.append(srcpad)
+        return srcpad
 
-    def _on_new_sample(self, sink):
-        if not self._frame_callback:
-            LOGGER.debug("Appsink sample dropped: no frame callback")
+    def _ensure_mjpeg_branch(self) -> None:
+        if self._mjpeg_server is None or self._pipeline is None or self._tee is None:
+            return
+        if self._mjpeg_branch is not None:
+            return
+        queue = self._make_element("queue", "mjpeg-queue")
+        queue.set_property("leaky", 2)
+        queue.set_property("max-size-buffers", 1)
+
+        converter = self._make_element("nvvideoconvert", "mjpeg-converter")
+        videorate = self._make_element("videorate", "mjpeg-videorate")
+        capsfilter = self._make_element("capsfilter", "mjpeg-caps")
+        capsfilter.set_property(
+            "caps",
+            Gst.Caps.from_string(
+                f"video/x-raw,format=I420,framerate={self._config.web.mjpeg_framerate}/1"
+            ),
+        )
+        try:
+            encoder = self._make_element("nvjpegenc", "mjpeg-encoder")
+        except RuntimeError:
+            encoder = self._make_element("jpegenc", "mjpeg-encoder")
+        try:
+            encoder.set_property("quality", 85)
+        except Exception:
+            LOGGER.debug("JPEG encoder quality property unsupported; using defaults")
+        jpeg_caps = self._make_element("capsfilter", "mjpeg-jpeg-caps")
+        jpeg_caps.set_property(
+            "caps",
+            Gst.Caps.from_string("image/jpeg,framerate=%d/1" % self._config.web.mjpeg_framerate),
+        )
+        appsink = self._make_element("appsink", "mjpeg-appsink")
+        appsink.set_property("emit-signals", True)
+        appsink.set_property("sync", False)
+        appsink.set_property("drop", True)
+        appsink.set_property("max-buffers", 1)
+        appsink.set_property("caps", Gst.Caps.from_string("image/jpeg"))
+
+        elements = [queue, converter, videorate, capsfilter, encoder, jpeg_caps, appsink]
+        for element in elements:
+            self._pipeline.add(element)
+
+        tee_pad: Optional[Gst.Pad] = None
+        signal_id: Optional[int] = None
+
+        try:
+            tee_pad = self._link_tee_to_queue(self._tee, queue)
+            for upstream, downstream in zip(elements, elements[1:]):
+                if not upstream.link(downstream):
+                    raise RuntimeError(
+                        f"Failed to link MJPEG branch element {upstream.get_name()} to {downstream.get_name()}"
+                    )
+            signal_id = appsink.connect("new-sample", self._on_mjpeg_sample)
+        except Exception:
+            LOGGER.exception("Failed to initialise MJPEG fallback branch")
+            if signal_id is not None:
+                appsink.disconnect(signal_id)
+            if tee_pad is not None:
+                parent = tee_pad.get_parent_element()
+                if parent:
+                    parent.release_request_pad(tee_pad)
+                if tee_pad in self._tee_src_pads:
+                    self._tee_src_pads.remove(tee_pad)
+            for element in elements:
+                try:
+                    self._pipeline.remove(element)
+                except Exception:
+                    LOGGER.debug("Failed to remove MJPEG element during rollback", exc_info=True)
+            return
+
+        for element in elements:
+            element.sync_state_with_parent()
+
+        assert tee_pad is not None and signal_id is not None
+        self._mjpeg_branch = _MjpegBranch(tee_pad=tee_pad, elements=elements, appsink=appsink, signal_id=signal_id)
+        LOGGER.info("MJPEG fallback branch initialised")
+
+    def _on_mjpeg_sample(self, appsink) -> Gst.FlowReturn:
+        if self._mjpeg_server is None:
             return Gst.FlowReturn.OK
-        sample = sink.emit("pull-sample")
+        sample = appsink.emit("pull-sample")
         if sample is None:
-            LOGGER.debug("Appsink sample pull returned EOS")
-            return Gst.FlowReturn.EOS
+            return Gst.FlowReturn.ERROR
         buffer = sample.get_buffer()
         if buffer is None:
-            LOGGER.debug("Appsink sample has no buffer")
-            return Gst.FlowReturn.OK
-        success, mapinfo = buffer.map(Gst.MapFlags.READ)
-        if not success:
-            LOGGER.debug("Appsink buffer map failed")
+            return Gst.FlowReturn.ERROR
+        buffer_size = buffer.get_size()
+        if buffer_size <= 0:
             return Gst.FlowReturn.OK
         try:
-            data = bytes(mapinfo.data)
-            LOGGER.debug('Appsink sample received: %d bytes', len(data))
-            self._frame_callback(data)
-        finally:
-            buffer.unmap(mapinfo)
+            frame_bytes = buffer.extract_dup(0, buffer_size)
+        except Exception:
+            success, map_info = buffer.map(Gst.MapFlags.READ)
+            if not success:
+                return Gst.FlowReturn.ERROR
+            try:
+                frame_bytes = bytes(map_info.data)
+            finally:
+                buffer.unmap(map_info)
+        try:
+            self._mjpeg_server.publish_frame(frame_bytes)
+            if not self._mjpeg_logged_first_frame:
+                self._mjpeg_logged_first_frame = True
+                LOGGER.info("MJPEG fallback publishing frames (%d bytes)", len(frame_bytes))
+        except Exception:
+            LOGGER.debug("Failed to publish MJPEG frame", exc_info=True)
         return Gst.FlowReturn.OK
+
+    def _teardown_mjpeg_branch(self) -> None:
+        if self._mjpeg_branch is None:
+            return
+        branch = self._mjpeg_branch
+        self._mjpeg_branch = None
+        try:
+            if branch.signal_id is not None:
+                branch.appsink.disconnect(branch.signal_id)
+        except Exception:
+            LOGGER.debug("Failed to disconnect MJPEG appsink callback", exc_info=True)
+        if branch.tee_pad in self._tee_src_pads:
+            self._tee_src_pads.remove(branch.tee_pad)
+        parent = branch.tee_pad.get_parent_element()
+        if parent:
+            try:
+                parent.release_request_pad(branch.tee_pad)
+            except Exception:
+                LOGGER.debug("Failed to release MJPEG tee pad", exc_info=True)
+        for element in branch.elements:
+            try:
+                element.set_state(Gst.State.NULL)
+            except Exception:
+                LOGGER.debug("Failed to set MJPEG element to NULL", exc_info=True)
+            try:
+                if self._pipeline is not None:
+                    self._pipeline.remove(element)
+            except Exception:
+                LOGGER.debug("Failed to remove MJPEG element from pipeline", exc_info=True)
+        LOGGER.info("MJPEG fallback branch torn down")
+
+    def _ensure_rtsp_branch(self) -> None:
+        """Create permanent RTSP output branch for MediaMTX bridge."""
+        if not self._config.web.enable_rtsp_output or self._pipeline is None or self._tee is None:
+            return
+        if self._rtsp_branch is not None:
+            return
+
+        LOGGER.info("Creating UDP/MPEG-TS output branch for MediaMTX")
+
+        # Build pipeline: tee → queue → nvvidconv → nvv4l2h264enc → h264parse → mpegtsmux → udpsink
+        queue = self._make_element("queue", "udp-queue")
+        queue.set_property("leaky", 2)
+        queue.set_property("max-size-buffers", 4)
+
+        # Video conversion for encoder
+        converter = self._make_element("nvvideoconvert", "udp-converter")
+        capsfilter = self._make_element("capsfilter", "udp-caps")
+        capsfilter.set_property(
+            "caps",
+            Gst.Caps.from_string("video/x-raw(memory:NVMM),format=NV12")
+        )
+
+        # H.264 encoding
+        encoder = self._make_element("nvv4l2h264enc", "udp-encoder")
+        encoder.set_property("bitrate", 2000000)  # 2 Mbps
+        encoder.set_property("preset-level", 1)  # UltraFastPreset
+        encoder.set_property("insert-sps-pps", True)
+        encoder.set_property("insert-vui", True)
+
+        parser = self._make_element("h264parse", "udp-h264parse")
+
+        # MPEG-TS muxer
+        muxer = self._make_element("mpegtsmux", "udp-mpegtsmux")
+        muxer.set_property("alignment", 7)  # 7 packets per buffer for UDP streaming
+
+        # UDP sink to MediaMTX
+        udp_sink = self._make_element("udpsink", "udp-sink")
+        udp_sink.set_property("host", "127.0.0.1")
+        udp_sink.set_property("port", 5600)  # MediaMTX expects stream on this port
+        udp_sink.set_property("sync", False)  # Don't sync to clock for lower latency
+
+        elements = [queue, converter, capsfilter, encoder, parser, muxer, udp_sink]
+        for element in elements:
+            self._pipeline.add(element)
+
+        tee_pad: Optional[Gst.Pad] = None
+
+        try:
+            tee_pad = self._link_tee_to_queue(self._tee, queue)
+            for upstream, downstream in zip(elements, elements[1:]):
+                if not upstream.link(downstream):
+                    raise RuntimeError(
+                        f"Failed to link UDP/MPEG-TS branch element {upstream.get_name()} to {downstream.get_name()}"
+                    )
+        except Exception:
+            LOGGER.exception("Failed to initialise UDP/MPEG-TS output branch")
+            if tee_pad is not None:
+                parent = tee_pad.get_parent_element()
+                if parent:
+                    parent.release_request_pad(tee_pad)
+                if tee_pad in self._tee_src_pads:
+                    self._tee_src_pads.remove(tee_pad)
+            for element in elements:
+                try:
+                    self._pipeline.remove(element)
+                except Exception:
+                    LOGGER.debug("Failed to remove RTSP element during rollback", exc_info=True)
+            return
+
+        for element in elements:
+            element.sync_state_with_parent()
+
+        assert tee_pad is not None
+        self._rtsp_branch = _RtspBranch(tee_pad=tee_pad, elements=elements, rtsp_sink=udp_sink)
+        LOGGER.info("UDP/MPEG-TS output branch initialised - sending to MediaMTX on 127.0.0.1:5600")
+
+    def _teardown_rtsp_branch(self) -> None:
+        """Tear down RTSP output branch."""
+        if self._rtsp_branch is None:
+            return
+        branch = self._rtsp_branch
+        self._rtsp_branch = None
+
+        if branch.tee_pad in self._tee_src_pads:
+            self._tee_src_pads.remove(branch.tee_pad)
+        parent = branch.tee_pad.get_parent_element()
+        if parent:
+            try:
+                parent.release_request_pad(branch.tee_pad)
+            except Exception:
+                LOGGER.debug("Failed to release RTSP tee pad", exc_info=True)
+
+        for element in branch.elements:
+            try:
+                element.set_state(Gst.State.NULL)
+            except Exception:
+                LOGGER.debug("Failed to set RTSP element to NULL", exc_info=True)
+            try:
+                if self._pipeline is not None:
+                    self._pipeline.remove(element)
+            except Exception:
+                LOGGER.debug("Failed to remove RTSP element from pipeline", exc_info=True)
+        LOGGER.info("RTSP output branch torn down")
+
+    def _drain_session_messages(self, session_id: str) -> bool:
+        branch = self._webrtc_branches.get(session_id)
+        if not branch:
+            return False
+        session = branch.session
+        for message in session.drain_browser_messages():
+            try:
+                msg_type = message.get("type")
+                if msg_type == "offer":
+                    self._handle_session_offer(branch, message)
+                elif msg_type == "candidate":
+                    self._handle_session_candidate(branch, message)
+            except Exception:
+                LOGGER.exception("Failed to handle signaling message for session %s", session_id)
+        if session.is_closed():
+            branch.drain_source_id = None
+            return False
+        return True
+
+    def _handle_session_offer(self, branch: _WebRTCBranch, message: dict) -> None:
+        sdp_text = message.get("sdp")
+        if not sdp_text:
+            LOGGER.warning("Offer without SDP for session %s", branch.session.id)
+            return
+        LOGGER.info("Received SDP offer for session %s", branch.session.id)
+        result, sdp = GstSdp.SDPMessage.new_from_text(sdp_text)
+        if result != GstSdp.SDPResult.OK:
+            LOGGER.error("Invalid SDP offer for session %s: %s", branch.session.id, result)
+            return
+        h264_pt = self._extract_h264_payload_type(sdp)
+        if h264_pt is not None and self._pipeline is not None:
+            payloader = self._pipeline.get_by_name(f"webrtc-pay-{branch.session.id}")
+            if payloader:
+                try:
+                    payloader.set_property("pt", int(h264_pt))
+                    LOGGER.info(
+                        "Configured payloader PT=%s for WebRTC session %s (from offer)",
+                        h264_pt,
+                        branch.session.id,
+                    )
+                except Exception:
+                    LOGGER.exception(
+                        "Failed to set payloader PT for WebRTC session %s", branch.session.id
+                    )
+
+        offer = GstWebRTC.WebRTCSessionDescription.new(
+            GstWebRTC.WebRTCSDPType.OFFER, sdp
+        )
+        promise = Gst.Promise.new_with_change_func(
+            self._on_remote_description_set, branch.session.id
+        )
+        branch.webrtcbin.emit("set-remote-description", offer, promise)
+
+    def _handle_session_candidate(self, branch: _WebRTCBranch, message: dict) -> None:
+        candidate_info = message.get("candidate") or {}
+        candidate_str = candidate_info.get("candidate")
+        if not candidate_str:
+            LOGGER.debug("Skipping empty ICE candidate for session %s", branch.session.id)
+            return
+        mline_index = int(candidate_info.get("sdpMLineIndex", 0))
+
+        # Parse candidate to extract useful info for debugging
+        candidate_parts = candidate_str.split()
+        candidate_type = "unknown"
+        ip_address = "unknown"
+
+        if len(candidate_parts) >= 5:
+            ip_address = candidate_parts[4]  # IP is typically the 5th element
+        if "typ" in candidate_parts:
+            typ_idx = candidate_parts.index("typ")
+            if typ_idx + 1 < len(candidate_parts):
+                candidate_type = candidate_parts[typ_idx + 1]  # host/srflx/relay
+
+        # Check for mDNS candidates
+        is_mdns = ".local" in ip_address
+        if is_mdns:
+            LOGGER.warning(
+                "WebRTC session %s received mDNS candidate from client: type=%s ip=%s - "
+                "Server cannot resolve .local addresses! This will prevent connection. "
+                "Client should disable chrome://flags/#enable-webrtc-hide-local-ips-with-mdns",
+                branch.session.id, candidate_type, ip_address
+            )
+        else:
+            LOGGER.info(
+                "WebRTC session %s received ICE candidate from client: type=%s ip=%s mline=%s",
+                branch.session.id, candidate_type, ip_address, mline_index
+            )
+
+        LOGGER.debug("WebRTC session %s full remote candidate: %s", branch.session.id, candidate_str)
+        branch.webrtcbin.emit("add-ice-candidate", mline_index, candidate_str)
+
+    def _on_remote_description_set(self, promise: Gst.Promise, session_id: str) -> None:
+        branch = self._webrtc_branches.get(session_id)
+        if not branch:
+            return
+        new_promise = Gst.Promise.new_with_change_func(self._on_answer_created, session_id)
+        branch.webrtcbin.emit("create-answer", None, new_promise)
+
+    def _on_answer_created(self, promise: Gst.Promise, session_id: str) -> None:
+        branch = self._webrtc_branches.get(session_id)
+        if not branch:
+            return
+        reply = promise.get_reply()
+        if reply is None or not reply.has_field("answer"):
+            LOGGER.error("Answer creation failed for session %s", session_id)
+            branch.session.close("answer-failed")
+            return
+        answer: GstWebRTC.WebRTCSessionDescription = reply.get_value("answer")
+
+        # Fix GStreamer 1.16 bug: webrtcbin sometimes creates recvonly answers
+        # We must explicitly set sendonly direction since we're sending video to browser
+        sdp_text = answer.sdp.as_text()
+
+        # Replace recvonly with sendonly to fix the direction bug
+        needs_fix = False
+        if "a=recvonly" in sdp_text:
+            LOGGER.warning(
+                "WebRTC session %s: GStreamer 1.16 bug detected! "
+                "Answer has 'recvonly' instead of 'sendonly'. Fixing...",
+                session_id
+            )
+            sdp_text = sdp_text.replace("a=recvonly", "a=sendonly")
+            needs_fix = True
+
+        # Fix setup attribute: answerer must use 'active' or 'passive', not 'actpass'
+        if "a=setup:actpass" in sdp_text:
+            LOGGER.warning(
+                "WebRTC session %s: GStreamer 1.16 bug detected! "
+                "Answer has 'setup:actpass' instead of 'active'. Fixing...",
+                session_id
+            )
+            sdp_text = sdp_text.replace("a=setup:actpass", "a=setup:active")
+            needs_fix = True
+
+        # Also fix rejected media (port 0) if present
+        if needs_fix:
+            import re
+            sdp_text = re.sub(r'm=video 0\b', 'm=video 9', sdp_text)
+
+            # Recreate the SDP message with fixed content
+            result, fixed_sdp = GstSdp.SDPMessage.new_from_text(sdp_text)
+            if result == GstSdp.SDPResult.OK:
+                fixed_answer = GstWebRTC.WebRTCSessionDescription.new(
+                    GstWebRTC.WebRTCSDPType.ANSWER, fixed_sdp
+                )
+                answer = fixed_answer
+                LOGGER.info("WebRTC session %s: SDP answer fixed successfully", session_id)
+
+        branch.webrtcbin.emit("set-local-description", answer, Gst.Promise.new())
+        sdp_text = answer.sdp.as_text()
+        LOGGER.info("Sending SDP answer to session %s", session_id)
+        LOGGER.info("SDP answer for session %s:\n%s", session_id, sdp_text)
+        branch.session.send_to_browser({"type": "answer", "sdp": sdp_text})
+        try:
+            branch.webrtcbin.emit("gather-candidates")
+        except TypeError:
+            LOGGER.debug(
+                "webrtcbin gather-candidates signal unavailable; relying on automatic ICE gathering"
+            )
+
+    def _on_ice_candidate(self, webrtcbin, mlineindex, candidate, session_id: str) -> None:
+        branch = self._webrtc_branches.get(session_id)
+        if not branch:
+            return
+
+        # Parse candidate to extract useful info for debugging
+        candidate_parts = candidate.split()
+        candidate_type = "unknown"
+        ip_address = "unknown"
+
+        if len(candidate_parts) >= 5:
+            ip_address = candidate_parts[4]  # IP is typically the 5th element
+        if "typ" in candidate_parts:
+            typ_idx = candidate_parts.index("typ")
+            if typ_idx + 1 < len(candidate_parts):
+                candidate_type = candidate_parts[typ_idx + 1]  # host/srflx/relay
+
+        # Filter out IPv6 link-local candidates (fe80::/10) and Docker bridge candidates
+        # These cannot be reached by remote browsers and cause ICE to fail
+        is_ipv6_link_local = ip_address.startswith("fe80:")
+        is_docker_bridge = ip_address == "172.17.0.1"
+
+        if is_ipv6_link_local:
+            LOGGER.debug(
+                "WebRTC session %s SKIPPING IPv6 link-local ICE candidate: type=%s ip=%s mline=%s (unreachable by browser)",
+                session_id, candidate_type, ip_address, mlineindex
+            )
+            return
+
+        if is_docker_bridge:
+            LOGGER.debug(
+                "WebRTC session %s SKIPPING Docker bridge ICE candidate: type=%s ip=%s mline=%s (unreachable by browser)",
+                session_id, candidate_type, ip_address, mlineindex
+            )
+            return
+
+        LOGGER.info(
+            "WebRTC session %s sending ICE candidate: type=%s ip=%s mline=%s",
+            session_id, candidate_type, ip_address, mlineindex
+        )
+        LOGGER.debug("WebRTC session %s full candidate: %s", session_id, candidate)
+
+        branch.session.send_to_browser(
+            {
+                "type": "candidate",
+                "candidate": {
+                    "candidate": candidate,
+                    "sdpMLineIndex": int(mlineindex),
+                    "sdpMid": str(mlineindex),
+                },
+            }
+        )
+
+    def _on_ice_connection_state_notify(self, webrtcbin, pspec, session_id: str) -> None:
+        try:
+            state = webrtcbin.get_property("ice-connection-state")
+        except Exception:
+            state = None
+            
+        branch = self._webrtc_branches.get(session_id)
+        if not branch:
+            return
+        ice_state = webrtcbin.get_property("ice-connection-state")
+        state_name = ice_state.value_nick if hasattr(ice_state, "value_nick") else str(ice_state)
+        LOGGER.info("WebRTC session %s ICE connection state: %s", session_id, state_name)
+
+        # Log when ICE connection fails
+        if ice_state == GstWebRTC.WebRTCICEConnectionState.FAILED:
+            LOGGER.error(
+                "WebRTC session %s ICE connection FAILED. This often means:\n"
+                "  - Client is using mDNS (.local) candidates that server can't resolve\n"
+                "  - No common network path between client and server\n"
+                "  - Firewall blocking UDP traffic\n"
+                "  Suggestion: Disable chrome://flags/#enable-webrtc-hide-local-ips-with-mdns",
+                session_id
+            )
+        
+        # If connected, push an IDR ASAP so the browser can start decoding
+        if state in (
+            GstWebRTC.WebRTCICEConnectionState.CONNECTED,
+            getattr(GstWebRTC.WebRTCICEConnectionState, "COMPLETED", 2),
+        ):
+            enc = self._pipeline.get_by_name(f"webrtc-encoder-{session_id}")
+            if enc:
+                sink = enc.get_static_pad("sink")
+                if sink:
+                    # request an immediate keyframe from upstream
+                    # request an immediate keyframe from upstream
+                    peer = sink.get_peer()
+                    target_pad = None
+                    if peer and peer.get_direction() == Gst.PadDirection.SRC:
+                        target_pad = peer
+                    else:
+                        target_pad = sink
+
+                    success = target_pad.send_event(
+                        GstVideo.video_event_new_upstream_force_key_unit(
+                            Gst.CLOCK_TIME_NONE,  # running-time (let GStreamer fill)
+                            True,                 # all-headers
+                            0                     # count
+                        )
+                    )
+                    LOGGER.info(
+                        "WebRTC session %s requested upstream keyframe on %s (success=%s)",
+                        session_id,
+                        "peer-src" if target_pad is peer else "encoder-sink",
+                        success,
+                    )
+
+                    # belt & braces: ask again ~300ms later
+                    def _again():
+                        if enc:
+                            s2 = enc.get_static_pad("sink")
+                            if s2:
+                                peer2 = s2.get_peer()
+                                pad = peer2 if (peer2 and peer2.get_direction() == Gst.PadDirection.SRC) else s2
+                                ok = pad.send_event(
+                                    GstVideo.video_event_new_upstream_force_key_unit(
+                                        Gst.CLOCK_TIME_NONE,
+                                        True,
+                                        0,
+                                    )
+                                )
+                                LOGGER.info(
+                                    "WebRTC session %s repeated keyframe request on %s (success=%s)",
+                                    session_id,
+                                    "peer-src" if pad is peer2 else "encoder-sink",
+                                    ok,
+                                )
+                        return False
+
+                    GLib.timeout_add(300, _again)
+
+    def _on_ice_gathering_state_notify(self, webrtcbin, pspec, session_id: str) -> None:
+        branch = self._webrtc_branches.get(session_id)
+        if not branch:
+            return
+        gathering_state = webrtcbin.get_property("ice-gathering-state")
+        state_name = gathering_state.value_nick if hasattr(gathering_state, "value_nick") else str(gathering_state)
+        LOGGER.info("WebRTC session %s ICE gathering state: %s", session_id, state_name)
+
+        # When gathering is complete, log a summary
+        if gathering_state == GstWebRTC.WebRTCICEGatheringState.COMPLETE:
+            LOGGER.info(
+                "WebRTC session %s ICE gathering complete. "
+                "Server has sent all local candidates to client. "
+                "Now waiting for ICE connection to establish...",
+                session_id
+            )
+
+    def _on_connection_state_notify(self, webrtcbin, pspec, session_id: str) -> None:
+        branch = self._webrtc_branches.get(session_id)
+        if not branch:
+            return
+        conn_state = webrtcbin.get_property("connection-state")
+        state_name = conn_state.value_nick if hasattr(conn_state, "value_nick") else str(conn_state)
+        LOGGER.info("WebRTC session %s peer connection state: %s", session_id, state_name)
+
+        # Log when connection is established successfully
+        if conn_state == GstWebRTC.WebRTCPeerConnectionState.CONNECTED:
+            LOGGER.info("WebRTC session %s successfully connected!", session_id)
+        elif conn_state == GstWebRTC.WebRTCPeerConnectionState.FAILED:
+            LOGGER.error("WebRTC session %s peer connection FAILED", session_id)
+
+    def _schedule_webrtc_teardown(self, session_id: str) -> None:
+        def _teardown() -> bool:
+            branch = self._webrtc_branches.pop(session_id, None)
+            if not branch:
+                return False
+            if branch.drain_source_id is not None:
+                GLib.source_remove(branch.drain_source_id)
+            if branch.poll_source_id is not None:
+                GLib.source_remove(branch.poll_source_id)
+            for element, pad in branch.request_pads:
+                try:
+                    element.release_request_pad(pad)
+                except Exception:
+                    LOGGER.exception("Failed to release WebRTC request pad during teardown")
+            branch.request_pads.clear()
+            if branch.tee_pad in self._tee_src_pads:
+                self._tee_src_pads.remove(branch.tee_pad)
+            parent = branch.tee_pad.get_parent_element()
+            if parent:
+                parent.release_request_pad(branch.tee_pad)
+            for element in branch.elements:
+                try:
+                    element.set_state(Gst.State.NULL)
+                except Exception:
+                    LOGGER.exception("Failed to set WebRTC branch element to NULL")
+                try:
+                    if self._pipeline is not None:
+                        self._pipeline.remove(element)
+                except Exception:
+                    LOGGER.exception("Failed to remove WebRTC element from pipeline")
+            LOGGER.info("WebRTC session %s torn down", session_id)
+            return False
+
+        GLib.idle_add(_teardown, priority=GLib.PRIORITY_LOW)
+
+    def _shutdown_webrtc_sessions(self, reason: str) -> None:
+        for session_id, branch in list(self._webrtc_branches.items()):
+            branch.session.close(reason)
+            self._schedule_webrtc_teardown(session_id)
+
+    @staticmethod
+    def _extract_h264_payload_type(sdp: GstSdp.SDPMessage) -> Optional[int]:
+        """Return the payload type advertised for H264 in the remote SDP (if any)."""
+        media_index = 0
+        while True:
+            try:
+                media = sdp.get_media(media_index)
+            except (IndexError, ValueError):
+                break
+            try:
+                media_name = media.get_media().lower()
+            except Exception:
+                media_index += 1
+                continue
+            if media_name != "video":
+                media_index += 1
+                continue
+            try:
+                attr_len = media.attributes_len()
+            except Exception:
+                attr_len = 0
+            for attr_index in range(attr_len):
+                try:
+                    attr = media.get_attribute(attr_index)
+                except Exception:
+                    continue
+                if not attr:
+                    continue
+                key = getattr(attr, "key", "")
+                if not isinstance(key, str) or key.lower() != "rtpmap":
+                    continue
+                value = getattr(attr, "value", "")
+                if not value:
+                    continue
+                parts = value.split(None, 1)
+                if len(parts) != 2:
+                    continue
+                pt_str, codec = parts
+                if "H264/90000" not in codec.upper():
+                    continue
+                try:
+                    return int(pt_str)
+                except ValueError:
+                    continue
+            media_index += 1
+        return None
 
 
 __all__ = ["DeepStreamPipeline"]

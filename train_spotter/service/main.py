@@ -19,8 +19,8 @@ from train_spotter.storage import (
     TrainEvent,
     VehicleEvent,
 )
-from train_spotter.ui.display import OverlayController
-from train_spotter.web import FrameBroadcaster, create_app
+from train_spotter.web import create_app
+from train_spotter.web.mjpeg import MJPEGStreamServer
 from train_spotter.service.roi import ROIConfig, load_roi_config
 
 if TYPE_CHECKING:
@@ -96,8 +96,8 @@ def configure_logging(level: str) -> None:
     )
 
 
-def run_web_server(app_config: AppConfig, db: DatabaseManager, broadcaster: FrameBroadcaster) -> threading.Thread:
-    app = create_app(app_config, db, broadcaster)
+def run_web_server(app_config: AppConfig, db: DatabaseManager, event_bus: EventBus) -> threading.Thread:
+    app = create_app(app_config, db, event_bus)
 
     def _serve() -> None:
         LOGGER.info(
@@ -141,11 +141,16 @@ def main() -> None:
         app_config.storage.database_path,
         ensure_fsync=app_config.storage.ensure_fsync,
     )
-    broadcaster = FrameBroadcaster()
-    overlay = OverlayController(event_bus) if app_config.display.enable_overlay else None
+    mjpeg_server = MJPEGStreamServer(
+        app_config.web.signaling_listen_host,
+        app_config.web.mjpeg_port,
+        app_config.web.max_clients,
+        app_config.web.mjpeg_framerate,
+    )
     event_processor = EventProcessor(event_bus, database)
 
-    web_thread = run_web_server(app_config, database, broadcaster)
+    mjpeg_server.start()
+    web_thread = run_web_server(app_config, database, event_bus)
 
     try:
         from train_spotter.pipeline import DeepStreamPipeline
@@ -160,9 +165,8 @@ def main() -> None:
         pipeline = DeepStreamPipeline(
             app_config,
             event_bus,
-            overlay_controller=overlay,
             roi_config=roi_config,
-            frame_callback=broadcaster.update_frame,
+            mjpeg_server=mjpeg_server,
             enable_inference=not args.passthrough,
         )
         pipeline.build()
@@ -181,10 +185,8 @@ def main() -> None:
     except KeyboardInterrupt:
         LOGGER.info("Shutdown requested")
     finally:
-        if overlay is not None:
-            overlay.stop()
         event_processor.stop()
-        broadcaster.close()
+        mjpeg_server.stop()
         if pipeline is not None:
             pipeline.stop()
         event_bus.stop()

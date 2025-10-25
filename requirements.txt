@@ -4,3 +4,4 @@ numpy>=1.24
 opencv-python>=4.8
 pytest>=7.4
 PyGObject==3.46.*
+websockets>=11.0

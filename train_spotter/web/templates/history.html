@@ -1,64 +1,142 @@
 {% extends "base.html" %}
 
+{% block title %}Event History - Train Spotter{% endblock %}
+
 {% block content %}
-<section>
-  <h2>Recent Train Passes</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Train ID</th>
-        <th>Start</th>
-        <th>End</th>
-        <th>Duration (s)</th>
-        <th>Coverage</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for t in trains %}
-      <tr>
-        <td>{{ t.train_id }}</td>
-        <td>{{ t.started_at }}</td>
-        <td>{{ t.ended_at }}</td>
-        <td>{{ '%.1f'|format(t.duration) }}</td>
-        <td>{{ t.coverage_ratio or '-' }}</td>
-      </tr>
-      {% else %}
-      <tr>
-        <td colspan="5">No train events recorded yet.</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</section>
-<section>
-  <h2>Vehicle Events</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Track</th>
-        <th>Label</th>
-        <th>Lane</th>
-        <th>Entered</th>
-        <th>Exited</th>
-        <th>Duration (s)</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for v in vehicles %}
-      <tr>
-        <td>{{ v.track_id }}</td>
-        <td>{{ v.class_label }}</td>
-        <td>{{ v.lane_id }}</td>
-        <td>{{ v.entered_at }}</td>
-        <td>{{ v.exited_at }}</td>
-        <td>{{ '%.1f'|format(v.duration) }}</td>
-      </tr>
-      {% else %}
-      <tr>
-        <td colspan="6">No vehicle events recorded yet.</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</section>
+<div class="row mb-4">
+  <div class="col-12">
+    <h2><i class="bi bi-clock-history"></i> Event History</h2>
+    <p class="text-muted">View recent train passes and vehicle detections</p>
+  </div>
+</div>
+
+<!-- Train Events Section -->
+<div class="row mb-4">
+  <div class="col-12">
+    <div class="card shadow-sm">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-train-front-fill text-primary"></i> Recent Train Passes</h5>
+        <span class="badge bg-primary">{{ trains|length }} events</span>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-hover mb-0">
+            <thead>
+              <tr>
+                <th>Train ID</th>
+                <th>Started</th>
+                <th>Ended</th>
+                <th class="text-end">Duration</th>
+                <th class="text-end">Coverage</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for t in trains %}
+              <tr>
+                <td><span class="badge bg-secondary">{{ t.train_id }}</span></td>
+                <td><small>{{ t.started_at }}</small></td>
+                <td><small>{{ t.ended_at }}</small></td>
+                <td class="text-end">{{ '%.1f'|format(t.duration) }}s</td>
+                <td class="text-end">
+                  {% if t.coverage_ratio %}
+                    <span class="badge bg-info">{{ '%.1f%%'|format(t.coverage_ratio * 100) }}</span>
+                  {% else %}
+                    <span class="text-muted">-</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% else %}
+              <tr>
+                <td colspan="5" class="text-center text-muted py-4">
+                  <i class="bi bi-inbox" style="font-size: 2rem;"></i>
+                  <p class="mb-0 mt-2">No train events recorded yet</p>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Vehicle Events Section -->
+<div class="row mb-4">
+  <div class="col-12">
+    <div class="card shadow-sm">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-car-front-fill text-success"></i> Vehicle Events</h5>
+        <div class="d-flex gap-2 align-items-center">
+          <input type="text" id="vehicle-search" class="form-control form-control-sm" placeholder="Search..." style="max-width: 200px;">
+          <span class="badge bg-success">{{ vehicles|length }} events</span>
+        </div>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table table-hover mb-0" id="vehicle-table">
+            <thead>
+              <tr>
+                <th>Track ID</th>
+                <th>Type</th>
+                <th>Lane</th>
+                <th>Entered</th>
+                <th>Exited</th>
+                <th class="text-end">Duration</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for v in vehicles %}
+              <tr>
+                <td><span class="badge bg-secondary">{{ v.track_id }}</span></td>
+                <td>
+                  {% if v.class_label == 'car' %}
+                    <i class="bi bi-car-front text-primary"></i>
+                  {% elif v.class_label == 'truck' %}
+                    <i class="bi bi-truck text-warning"></i>
+                  {% else %}
+                    <i class="bi bi-question-circle"></i>
+                  {% endif %}
+                  {{ v.class_label|title }}
+                </td>
+                <td><span class="badge bg-light text-dark">Lane {{ v.lane_id }}</span></td>
+                <td><small>{{ v.entered_at }}</small></td>
+                <td><small>{{ v.exited_at }}</small></td>
+                <td class="text-end">{{ '%.1f'|format(v.duration) }}s</td>
+              </tr>
+              {% else %}
+              <tr>
+                <td colspan="6" class="text-center text-muted py-4">
+                  <i class="bi bi-inbox" style="font-size: 2rem;"></i>
+                  <p class="mb-0 mt-2">No vehicle events recorded yet</p>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+  // Simple table search functionality
+  const searchInput = document.getElementById('vehicle-search');
+  const vehicleTable = document.getElementById('vehicle-table');
+
+  if (searchInput && vehicleTable) {
+    searchInput.addEventListener('input', (e) => {
+      const searchTerm = e.target.value.toLowerCase();
+      const rows = vehicleTable.querySelectorAll('tbody tr');
+
+      rows.forEach(row => {
+        const text = row.textContent.toLowerCase();
+        row.style.display = text.includes(searchTerm) ? '' : 'none';
+      });
+    });
+  }
+</script>
 {% endblock %}

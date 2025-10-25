@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+
+{% block title %}Analytics Dashboard - Train Spotter{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+  <div class="col-12">
+    <h2><i class="bi bi-graph-up"></i> Analytics Dashboard</h2>
+    <p class="text-muted">Real-time traffic and train detection statistics</p>
+  </div>
+</div>
+
+<!-- Summary Stats Row -->
+<div class="row g-4 mb-4">
+  <div class="col-md-3 col-sm-6">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body text-center">
+        <i class="bi bi-train-front stat-icon text-primary"></i>
+        <div class="stat-value" id="total-trains">-</div>
+        <div class="stat-label text-muted">Total Trains</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3 col-sm-6">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body text-center">
+        <i class="bi bi-car-front stat-icon text-success"></i>
+        <div class="stat-value" id="total-vehicles">-</div>
+        <div class="stat-label text-muted">Total Vehicles</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3 col-sm-6">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body text-center">
+        <i class="bi bi-truck stat-icon text-warning"></i>
+        <div class="stat-value" id="total-trucks">-</div>
+        <div class="stat-label text-muted">Trucks</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3 col-sm-6">
+    <div class="card stat-card shadow-sm h-100">
+      <div class="card-body text-center">
+        <i class="bi bi-speedometer2 stat-icon text-info"></i>
+        <div class="stat-value" id="avg-duration">-</div>
+        <div class="stat-label text-muted">Avg. Duration (s)</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Charts Row 1 -->
+<div class="row g-4 mb-4">
+  <div class="col-lg-8">
+    <div class="card shadow-sm">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-graph-up-arrow"></i> Activity Over Time</h5>
+      </div>
+      <div class="card-body">
+        <div class="chart-container">
+          <canvas id="activity-chart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-4">
+    <div class="card shadow-sm">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-pie-chart-fill"></i> Vehicle Types</h5>
+      </div>
+      <div class="card-body">
+        <div class="chart-container">
+          <canvas id="vehicle-type-chart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Charts Row 2 -->
+<div class="row g-4 mb-4">
+  <div class="col-lg-6">
+    <div class="card shadow-sm">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-bar-chart-fill"></i> Lane Distribution</h5>
+      </div>
+      <div class="card-body">
+        <div class="chart-container">
+          <canvas id="lane-chart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card shadow-sm">
+      <div class="card-header">
+        <h5 class="mb-0"><i class="bi bi-clock-history"></i> Hourly Traffic</h5>
+      </div>
+      <div class="card-body">
+        <div class="chart-container">
+          <canvas id="hourly-chart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Last Updated Indicator -->
+<div class="row">
+  <div class="col-12">
+    <div class="text-center text-muted">
+      <small>
+        <i class="bi bi-arrow-clockwise"></i>
+        Last updated: <span id="last-update">Never</span>
+        <span class="spinner-border spinner-border-sm ms-2 d-none" id="loading-spinner"></span>
+      </small>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+{% endblock %}
